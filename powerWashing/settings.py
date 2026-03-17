@@ -92,11 +92,11 @@ DATABASES = {
     }
 }
 
-# POSTGRES_LOCALLY = True
-# if not DEBUG or POSTGRES_LOCALLY:
-#     # DATABASES['default'] = dj_database_url.parse('postgresql://postgres:BhBJVGJptzwEKPrbZbyTuvumiSsflzoa@junction.proxy.rlwy.net:38981/railway')
-#     DATABASES['default'] = dj_database_url.parse(
-#         'postgresql://postgres:ivnCkqDIIZAOhpaRUQfvDryCvtjuMlir@turntable.proxy.rlwy.net:55561/railway')
+POSTGRES_LOCALLY = True
+if not DEBUG or POSTGRES_LOCALLY:
+    # DATABASES['default'] = dj_database_url.parse('postgresql://postgres:BhBJVGJptzwEKPrbZbyTuvumiSsflzoa@junction.proxy.rlwy.net:38981/railway')
+    DATABASES['default'] = dj_database_url.parse(
+        'postgresql://postgres:ivnCkqDIIZAOhpaRUQfvDryCvtjuMlir@turntable.proxy.rlwy.net:55561/railway')
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
