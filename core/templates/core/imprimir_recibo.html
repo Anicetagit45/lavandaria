@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Imprimir Recibo</title>
+    <style>
+        body {
+            text-align: center;
+            margin: 0;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+    <script>
+        window.onload = function() {
+            window.print();
+        };
+    </script>
+</head>
+<body>
+    <img src="data:image/png;base64,{{ img_base64 }}" alt="Recibo">
+</body>
+</html>

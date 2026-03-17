@@ -1,0 +1,37 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="false" level="WARNING" enabled_by_default="false">
+      <option name="ignoredPackages">
+        <list>
+          <option value="aiohappyeyeballs" />
+          <option value="aiohttp" />
+          <option value="aiohttp-retry" />
+          <option value="aiosignal" />
+          <option value="attrs" />
+          <option value="Brotli" />
+          <option value="chardet" />
+          <option value="click" />
+          <option value="colorama" />
+          <option value="et_xmlfile" />
+          <option value="fonttools" />
+          <option value="frozenlist" />
+          <option value="gunicorn" />
+          <option value="multidict" />
+          <option value="openpyxl" />
+          <option value="packaging" />
+          <option value="propcache" />
+          <option value="pydyf" />
+          <option value="PyJWT" />
+          <option value="pyphen" />
+          <option value="qrcode" />
+          <option value="tinyhtml5" />
+          <option value="twilio" />
+          <option value="typing_extensions" />
+          <option value="yarl" />
+          <option value="zopfli" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

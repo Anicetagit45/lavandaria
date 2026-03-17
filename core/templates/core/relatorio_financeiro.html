@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Relatório Financeiro (Caixa)</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; color: #333; font-size: 12px; }
+
+        .header { text-align: left; margin-bottom: 18px; }
+        .header h6 { font-size: 14px; color: #007bff; margin-bottom: 5px; }
+        .header p { font-size: 12px; color: #555; margin-top: 0; line-height: 1.35; }
+        .header hr { border: 0; height: 1px; background-color: #ddd; margin: 12px 0; }
+
+        .kpis { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+        .kpis td { padding: 8px; border: 1px solid #e0e0e0; }
+        .kpi-title { color: #666; font-size: 11px; text-transform: uppercase; }
+        .kpi-value { font-size: 14px; font-weight: bold; margin-top: 4px; }
+
+        .section-title {
+            margin-top: 18px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #333;
+            background-color: #f8f9fa;
+            padding: 10px 8px;
+            border-left: 4px solid #007bff;
+            border-radius: 4px;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-top: 8px;
+            margin-bottom: 14px;
+        }
+
+        th, td { padding: 6px; text-align: left; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+        thead { background-color: #f8f9fa; color: #333; font-weight: bold; text-transform: uppercase; }
+        thead th { border-bottom: 2px solid #007bff; font-size: 11px; }
+        tfoot td { font-weight: bold; background-color: #f8f9fa; border-top: 2px solid #ddd; }
+
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .muted { color: #777; }
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 10px;
+            background: #eef2ff;
+            color: #3730a3;
+        }
+        .danger { background: #fee2e2; color: #991b1b; }
+        .ok { background: #dcfce7; color: #166534; }
+    </style>
+</head>
+<body>
+{% load custom_filters %}
+
+<!-- Cabeçalho -->
+<div class="header">
+    <h6>POWER WASHING, LDA</h6>
+    <p>
+        Relatório Financeiro (Caixa) - Recebimentos
+        <br>
+        Período: <strong>{{ start_date }}</strong> até <strong>{{ end_date }}</strong>
+        <br>
+        {% if lavandaria %}
+            {{ lavandaria }} - {{ lavandaria.endereco }}
+        {% else %}
+            <span class="muted">Lavandaria: (não definida)</span>
+        {% endif %}
+    </p>
+    <hr>
+</div>
+
+<!-- KPIs -->
+<table class="kpis">
+    <tr>
+        <td>
+            <div class="kpi-title">Total faturado (pedidos)</div>
+            <div class="kpi-value">{{ total_faturado|currency_mzn }}</div>
+        </td>
+        <td>
+            <div class="kpi-title">Total recebido (pagamentos)</div>
+            <div class="kpi-value">{{ total_recebido|currency_mzn }}</div>
+        </td>
+        <td>
+            <div class="kpi-title">Saldo em aberto</div>
+            <div class="kpi-value">{{ saldo_total|currency_mzn }}</div>
+        </td>
+    </tr>
+</table>
+
+<!-- Resumo por método -->
+<div class="section-title">Resumo por Método de Pagamento</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Método</th>
+            <th class="text-center">Qtd</th>
+            <th class="text-right">Total Recebido</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in resumo_por_metodo %}
+        <tr>
+            <td>{{ row.metodo_pagamento|default:"-"|title }}</td>
+            <td class="text-center">{{ row.qtd }}</td>
+            <td class="text-right">{{ row.total|currency_mzn }}</td>
+        </tr>
+    {% empty %}
+        <tr>
+            <td colspan="3" class="muted">Nenhum pagamento encontrado no período/seleção.</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <td colspan="2">Total</td>
+            <td class="text-right">{{ total_recebido|currency_mzn }}</td>
+        </tr>
+    </tfoot>
+</table>
+
+<!-- Resumo por dia (caixa) -->
+<div class="section-title">Resumo por Dia (Data de Pagamento)</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Dia</th>
+            <th class="text-center">Qtd</th>
+            <th class="text-right">Total Recebido</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in resumo_por_dia %}
+        <tr>
+            <td>{{ row.pago_em__date|date:"d/m/Y" }}</td>
+            <td class="text-center">{{ row.qtd }}</td>
+            <td class="text-right">{{ row.total|currency_mzn }}</td>
+        </tr>
+    {% empty %}
+        <tr>
+            <td colspan="3" class="muted">Sem movimentos.</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<!-- Resumo por caixa -->
+<div class="section-title">Resumo por Caixa (Operador)</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Caixa</th>
+            <th class="text-center">Qtd</th>
+            <th class="text-right">Total Recebido</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in resumo_por_caixa %}
+        <tr>
+            <td>{{ row.criado_por__user__username|default:"-" }}</td>
+            <td class="text-center">{{ row.qtd }}</td>
+            <td class="text-right">{{ row.total|currency_mzn }}</td>
+        </tr>
+    {% empty %}
+        <tr>
+            <td colspan="3" class="muted">Sem movimentos.</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<!-- Resumo por lavandaria (se multi) -->
+<div class="section-title">Resumo por Lavandaria</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Lavandaria</th>
+            <th class="text-center">Qtd</th>
+            <th class="text-right">Total Recebido</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in resumo_por_lavandaria %}
+        <tr>
+            <td>{{ row.pedido__lavandaria__nome|default:"-" }}</td>
+            <td class="text-center">{{ row.qtd }}</td>
+            <td class="text-right">{{ row.total|currency_mzn }}</td>
+        </tr>
+    {% empty %}
+        <tr>
+            <td colspan="3" class="muted">Sem movimentos.</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<!-- Detalhe de pagamentos -->
+<div class="section-title">Movimentos (Pagamentos)</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>#Pedido</th>
+            <th>Cliente</th>
+            <th>Data do Pedido</th>
+            <th>Data do Pagamento</th>
+            <th>Método</th>
+            <th>Caixa</th>
+            <th class="text-right">Valor</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for p in pagamentos %}
+        <tr>
+            <td>{{ p.id }}</td>
+            <td>{{ p.pedido.id }}</td>
+            <td>{{ p.pedido.cliente.nome }}</td>
+            <td>{{ p.pedido.criado_em|date:"d/m/Y" }}</td>
+            <td>{{ p.pago_em|date:"d/m/Y H:i" }}</td>
+            <td>{{ p.metodo_pagamento|title }}</td>
+            <td>{{ p.criado_por.user.username|default:"-" }}</td>
+            <td class="text-right">{{ p.valor|currency_mzn }}</td>
+        </tr>
+    {% empty %}
+        <tr>
+            <td colspan="8" class="muted">Nenhum pagamento encontrado.</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <td colspan="7">Total Recebido</td>
+            <td class="text-right">{{ total_recebido|currency_mzn }}</td>
+        </tr>
+    </tfoot>
+</table>
+
+
+</body>
+</html>
+

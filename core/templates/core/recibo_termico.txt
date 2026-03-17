@@ -1,0 +1,91 @@
+POWER WASHING, LDA
+401426310
+{{ pedido.lavandaria.endereco }}
+Cel.: {{ pedido.lavandaria.telefone }}
+
+Cli.: {{ pedido.cliente.nome }}
+      {{ pedido.cliente.telefone }}
+
+{% if pedido.status_pagamento == "pago" %}
+VD          N.{{ pedido.id }}
+{% else %}
+Factura     N.{{ pedido.id }}
+{% endif %}
+Data: {{ pedido.criado_em|date:"d/m/Y H:i" }}
+----------------------------------------------------------------
+                        PONTOS FIDELIDADE
+                (50000pts = 250 Mts de desconto)
+Pontos ganhos neste pedido: {{ pontos_ganhos }} pts
+Data de validade: {{ data_validade_pontos|date:"d/m/Y" }}
+Saldo atual de pontos: {{ pontos_totais }} pts
+----------------------------------------------------------------
+{% if desconto_aplicado > 0 %}            DESCONTO FIDELIDADE APLICADO
+            Valor: {{ desconto_aplicado|stringformat:".2f" }} Mts{% endif %}
+----------------------------------------------------------------
+TOTAL A PAGAR:       {{ pedido.total_final|stringformat:".2f" }} Mts
+{% if pedido.status_pagamento == "pago" %}
+Pagamento: QUITADO
+{% elif pedido.status_pagamento == "parcial" %}
+Pagamento: PARCIAL
+{% else %}
+Pagamento: EM ABERTO
+{% endif %}
+{% if pedido.pagamentos.exists %}
+Detalhes de Pagamento:
+{% for pagamento in pedido.pagamentos.all %}
+{{ pagamento.valor|stringformat:"8.2f" }} Mts  {{ pagamento.get_metodo_pagamento_display }}
+{% endfor %}
+{% endif %}
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+*So aceitamos devolucao dentro de 24h
+ e o artigo nao deve ter sido usado*
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Descricao                       Quant.                        Total
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{% for item in pedido.itens.all %}
+{{ item.item_de_servico.nome|slice:":20"|stringformat:"-20s" }} {{ item.quantidade|stringformat:"3d" }} {{ item.preco_total|stringformat:"8.2f" }} Mts
+{% if item.descricao %}  Obs: {{ item.descricao }}{% endif %}
+{% endfor %}
+{% if pedido.desconto_cabides > 0 %}
+Desconto Cabides ({{ pedido.cabides_trazidos }})              -   {{ pedido.desconto_cabides|stringformat:"8.2f" }} Mts
+{% endif %}
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Subtotal:                                              {{ pedido.total|stringformat:"8.2f" }} MZN
+{% if desconto_aplicado > 0 %}Desconto fidelidade:                                -{{ desconto_aplicado|stringformat:"7.2f" }} MZN{% endif %}
+TOTAL:                                               {{ pedido.total_final|stringformat:"8.2f" }} MZN
+Pago:                                                    {{ valor_pago|stringformat:"8.2f" }} MZN
+Saldo:                                                      {{ saldo|stringformat:"8.2f" }} MZN
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                                  IVA INCLUSO
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                LEVANTAMENTO DE ROUPAS
+       INFORMACAO IMPORTANTE AO CLIENTE
+As roupas e demais artigos ficam prontos entre
+2 a 7 dias, conforme o tipo de servico.
+Apos notificacao de roupa pronta, o cliente
+dispoe de 30 dias para efetuar o levantamento.
+Findo este prazo, sera aplicada uma taxa de
+armazenamento correspondente a 50%
+do valor total do servico.
+A empresa nao se responsabiliza por artigos
+nao levantados apos 60 dias.
+Ao deixar os artigos para lavagem,
+o cliente declara estar
+de acordo com estes termos.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Vendedor: {{ pedido.funcionario.user.username }}
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Pedidos com saldo em aberto (ultimos 3)
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Nr.Pdd                        Data                                Saldo
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{% for p in pedidos_nao_pagos %}
+{{ p.id|stringformat:"6d" }}                   {{ p.criado_em|date:"d/m/Y" }}              {{ p.saldo_calc|stringformat:"8.2f" }} Mts
+{% empty %}
+Nenhum pedido em aberto
+{% endfor %}
+{% if total_em_divida %}
+Total em divida: {{ total_em_divida|stringformat:"8.2f" }} Mts
+{% endif %}
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

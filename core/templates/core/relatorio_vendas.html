@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pedidos</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: left;
+            margin-bottom: 30px;
+        }
+
+        .header h6 {
+            font-size: 14px;
+            color: #007bff;
+        }
+
+        .header p {
+            font-size: 13px;
+            color: #555;
+        }
+
+        .cliente {
+            font-size: 12px;
+            color: black;
+            background: #f8f9fa;
+        }
+
+        .table {
+            width: 100%;
+            {#border-collapse: collapse;#}
+            background: white;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        th, td {
+            padding: 4px;
+            text-align: center;
+            border-bottom: 1px solid #ddd;
+        }
+
+        thead {
+            background-color: #007bff;
+            color: black;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        thead th {
+            padding: 5px;
+            border-bottom: 2px solid #0056b3;
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- Cabeçalho -->
+    <div class="header">
+        <h6>POWER WASHING, LDA</h6>
+        <p>Vendas: Entidade/Artigo ({{ start_date }} até {{ end_date }})</p>
+        <hr>
+    </div>
+
+
+<div>
+    {% for pedido in pedidos %}
+        <h6 class="cliente">{{ pedido.cliente.nome }} - {{ pedido.id }}</h6>
+        <table class="table">
+            <thead>
+            <tr>
+                <th>Item</th>
+                <th>Quant.</th>
+                <th>Desc.</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in pedido.itens.all %}
+                <tr>
+                    <td>{{ item.item_de_servico.nome }}</td>
+                    <td>{{ item.quantidade }} UN</td>
+                    <td>{{ item.descricao }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <table>
+            <tr style="font-weight: bold; background: #f1f1f1;">
+                <td style="text-align: center;" colspan="2">Subtotal</td>
+                <td style="text-align: center;">{{ pedido.total_quantidade }} UN</td>
+            </tr>
+        </table>
+    {% endfor %}
+</div>
+
+<div>
+    <hr>
+    <table class="table">
+        <tr>
+            <td><strong>Total de Itens</strong></td>
+            <td>{{ total_quantidade }} UN</td>
+        </tr>
+    </table>
+</div>
+
+</body>
+</html>
