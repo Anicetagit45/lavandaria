@@ -300,24 +300,7 @@ class ItemPedidoInline(StackedInline):
 
 # admin.py - Versão alternativa mais simples
 
-class PagamentoPedidoInline(StackedInline):
-    model = PagamentoPedido
-    extra = 0
-    fields = (
-        ("valor", "metodo_pagamento"),
-        ("pago_em", "criado_por"),
-    )
-    readonly_fields = ("pago_em", "criado_por")
 
-    def save_model(self, request, obj, form, change):
-        """Salva garantindo que o ID é novo"""
-        if not obj.pk:  # Se é novo objeto
-            obj.id = None  # Garante ID novo
-        try:
-            obj.criado_por = Funcionario.objects.get(user=request.user)
-        except (Funcionario.DoesNotExist, AttributeError):
-            pass
-        obj.save()
 
 
 # Configuração do modelo Lavandaria no Admin
@@ -362,6 +345,16 @@ class ItemServicoAdmin(ModelAdmin, ImportExportModelAdmin):
     list_filter = ('disponivel',)
     import_form_class = ImportForm
     export_form_class = ExportForm
+
+class PagamentoPedidoInline(StackedInline):
+    model = PagamentoPedido
+    extra = 0
+    fields = (
+        ("valor", "metodo_pagamento"),
+        ("pago_em", "criado_por"),
+    )
+    readonly_fields = ("pago_em", "criado_por")
+    # SEM método save_model - deixamos o admin principal gerenciar
 
 
 # Configuração do modelo Servico no Admin
@@ -445,7 +438,6 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
     import_form_class = ImportForm
     export_form_class = ExportForm
 
-    # ===== NOVO: Usar form personalizado =====
     form = PedidoAdminForm
 
     list_display = (
@@ -485,31 +477,52 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
     )
 
     autocomplete_fields = ("cliente",)
-
-    # ✅ adiciona pagamentos inline + itens
     inlines = [ItemPedidoInline, PagamentoPedidoInline]
+
+    # ===== MÉTODOS PRINCIPAIS =====
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        try:
+            funcionario = Funcionario.objects.get(user=request.user)
+            if funcionario.lavandaria:
+                return qs.filter(lavandaria=funcionario.lavandaria)
+            return qs.none()
+        except Funcionario.DoesNotExist:
+            return qs.none()
+
+    def save_model(self, request, obj, form, change):
+        """Só atribui funcionário/lavandaria em novos objetos"""
+        if not change:
+            try:
+                funcionario = Funcionario.objects.get(user=request.user)
+                obj.funcionario = funcionario
+                if funcionario.lavandaria:
+                    obj.lavandaria = funcionario.lavandaria
+            except Funcionario.DoesNotExist:
+                pass
+        super().save_model(request, obj, form, change)
 
     def save_related(self, request, form, formsets, change):
         """
         Salva objetos relacionados na ordem correta:
-        1. Primeiro os itens do pedido (para calcular o total)
-        2. Depois os pagamentos
-        3. Por fim, recalcula o status de pagamento
+        1. Primeiro todos os objetos (itens e pagamentos)
+        2. Depois atualiza o total do pedido
+        3. Por fim, recalcula status de pagamento
         """
         obj = form.instance
 
-        # PASSO 1: Processar TODOS os formsets primeiro
+        # PASSO 1: Processar TODOS os formsets
         for formset in formsets:
-            # Salva todos os objetos (itens e pagamentos)
             instances = formset.save(commit=False)
 
-            # Remover objetos marcados para deletar
+            # Deletar objetos marcados
             for obj_to_delete in formset.deleted_objects:
                 obj_to_delete.delete()
 
             # Salvar novas instâncias
             for instance in instances:
-                # Para pagamentos, garantir criado_por
                 if isinstance(instance, PagamentoPedido) and not instance.criado_por:
                     try:
                         instance.criado_por = Funcionario.objects.get(user=request.user)
@@ -519,29 +532,46 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
 
             formset.save_m2m()
 
-        # PASSO 2: Atualizar o total do pedido baseado nos itens salvos
+        # PASSO 2: Atualizar total baseado nos itens
         if obj.pk:
             obj.atualizar_total()
 
-        # PASSO 3: Recalcular status de pagamento (isso vai chamar recalcular_pagamentos internamente)
+        # PASSO 3: Recalcular status de pagamento
         if obj.pk:
-            # Força o recálculo completo do pedido
-            obj.refresh_from_db()
             obj.recalcular_pagamentos()
 
+    def save_formset(self, request, form, formset, change):
+        """
+        Apenas salva os objetos - o save_related cuidará dos recálculos
+        """
+        instances = formset.save(commit=False)
 
+        for instance in instances:
+            if isinstance(instance, PagamentoPedido) and not instance.criado_por:
+                try:
+                    instance.criado_por = Funcionario.objects.get(user=request.user)
+                except Funcionario.DoesNotExist:
+                    instance.criado_por = None
+            instance.save()
 
-    def get_search_results(self, request, queryset, search_term):
-        queryset, use_distinct = super().get_search_results(
-            request, queryset, search_term
-        )
-        return queryset.distinct(), use_distinct
+        for obj_to_delete in formset.deleted_objects:
+            obj_to_delete.delete()
 
+        formset.save_m2m()
+
+    # ===== MÉTODOS AUXILIARES =====
     def saldo_admin(self, obj):
         return obj.saldo
 
     saldo_admin.short_description = "Saldo"
 
+    def botao_imprimir(self, obj):
+        url = reverse("core:imprimir_recibo_imagem", args=[obj.id])
+        return format_html(f'<a class="button" href="{url}" target="_blank">Imprimir</a>')
+
+    botao_imprimir.short_description = "Imprimir Recibo"
+
+    # ===== RESTRIÇÕES DE STATUS =====
     def get_form(self, request, obj=None, **kwargs):
         form = super().get_form(request, obj, **kwargs)
         if obj and obj.pk:
@@ -551,204 +581,21 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
     def _restrict_status_choices(self, form, obj):
         if "status" in form.base_fields:
             current_status = obj.status
-
             status_flow = {
                 "pendente": ["pendente", "completo"],
                 "completo": ["completo", "pronto"],
                 "pronto": ["pronto", "entregue"],
                 "entregue": ["entregue"],
             }
-
             allowed_statuses = status_flow.get(current_status, [current_status])
-            choices = [choice for choice in form.base_fields['status'].choices
-                       if choice[0] in allowed_statuses]
-
             form.base_fields["status"].choices = [
                 c for c in form.base_fields["status"].choices
                 if c[0] in allowed_statuses
             ]
-
             if len(allowed_statuses) == 1:
                 form.base_fields["status"].disabled = True
 
-    def save_model(self, request, obj, form, change):
-        # Lógica de atribuir funcionario/lavandaria
-        try:
-            funcionario = Funcionario.objects.get(user=request.user)
-            obj.funcionario = funcionario
-            if funcionario.lavandaria:
-                obj.lavandaria = funcionario.lavandaria
-            else:
-                raise ValueError("O funcionário logado não está associado a nenhuma lavandaria.")
-        except Funcionario.DoesNotExist:
-            raise ValueError("O usuário logado não está associado a nenhum funcionário.")
-
-        super().save_model(request, obj, form, change)
-
-
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        try:
-            funcionario = Funcionario.objects.get(user=request.user)
-            if funcionario.lavandaria:
-                return qs.filter(lavandaria=funcionario.lavandaria)
-            raise ValueError("O funcionário logado não está associado a nenhuma lavandaria.")
-        except Funcionario.DoesNotExist:
-            raise ValueError("O usuário logado não está associado a nenhum funcionário.")
-
-        # 🎯 O desconto de cabides será calculado automaticamente no model.save()
-        # Não precisamos mais de lógica manual aqui
-
-        super().save_model(request, obj, form, change)
-
-        # recalcular pagamentos após salvar
-        try:
-            obj.recalcular_pagamentos()
-        except Exception:
-            pass
-
-    def save_formset(self, request, form, formset, change):
-        """
-        Garante:
-        - criado_por preenchido em PagamentoPedido
-        - recalcular_pagamentos após alterações
-        """
-        instances = formset.save(commit=False)
-
-        for inst in instances:
-            if isinstance(inst, PagamentoPedido) and not inst.criado_por:
-                try:
-                    inst.criado_por = Funcionario.objects.get(user=request.user)
-                except Funcionario.DoesNotExist:
-                    inst.criado_por = None
-            inst.save()
-
-        formset.save_m2m()
-
-        obj = form.instance
-        try:
-            obj.recalcular_pagamentos()
-        except Exception:
-            pass
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        try:
-            funcionario = Funcionario.objects.get(user=request.user)
-            if funcionario.lavandaria:
-                return qs.filter(lavandaria=funcionario.lavandaria)
-            raise ValueError("O funcionário logado não está associado a nenhuma lavandaria.")
-        except Funcionario.DoesNotExist:
-            raise ValueError("O usuário logado não está associado a nenhum funcionário.")
-
-    def botao_imprimir(self, obj):
-        url = reverse("core:imprimir_recibo_imagem", args=[obj.id])
-        return format_html(f'<a class="button" href="{url}" target="_blank">Imprimir</a>')
-
-    botao_imprimir.short_description = "Imprimir Recibo"
-
-    def marcar_como_completo(self, request, queryset):
-        pedidos_processados = 0
-
-        for pedido in queryset:
-            if pedido.status == "pendente":
-                pedido.status = "completo"
-                pedido.save(update_fields=["status"])
-                pedidos_processados += 1
-            else:
-                messages.warning(
-                    request,
-                    f"Pedido {pedido.id} não pode ser marcado como completo. "
-                    f"Status atual: {pedido.status}"
-                )
-
-        if pedidos_processados:
-            messages.success(
-                request,
-                f"{pedidos_processados} pedido(s) marcado(s) como completo."
-            )
-        else:
-            messages.warning(request, "Nenhum pedido pôde ser processado.")
-
-    def marcar_como_pronto(self, request, queryset):
-        pedidos_processados = 0
-
-        for pedido in queryset:
-            if pedido.status == "completo":
-                pedido.status = "pronto"
-                pedido.save(update_fields=["status"])
-                pedidos_processados += 1
-            else:
-                messages.warning(
-                    request,
-                    f"Pedido {pedido.id} não pode ser marcado como pronto. "
-                    f"Status atual: {pedido.status}"
-                )
-
-        if pedidos_processados:
-            messages.success(
-                request,
-                f"{pedidos_processados} pedido(s) marcado(s) como pronto."
-            )
-        else:
-            messages.warning(request, "Nenhum pedido pôde ser processado.")
-
-    def marcar_como_entregue(self, request, queryset):
-        pedidos_processados = 0
-
-        for pedido in queryset:
-            if pedido.status == "pronto":
-                pedido.status = "entregue"
-                pedido.save(update_fields=["status"])
-                pedidos_processados += 1
-            else:
-                messages.warning(
-                    request,
-                    f"Pedido {pedido.id} não pode ser marcado como entregue. "
-                    f"Status atual: {pedido.status}"
-                )
-
-        if pedidos_processados:
-            messages.success(
-                request,
-                f"{pedidos_processados} pedido(s) marcado(s) como entregue."
-            )
-        else:
-            messages.warning(request, "Nenhum pedido pôde ser processado.")
-
-    marcar_como_completo.short_description = ("Marcar como Completo (apenas pendentes)")
-    marcar_como_pronto.short_description = "Marcar como Pronto (apenas completo)"
-    marcar_como_entregue.short_description = "Marcar como Entregue (apenas prontos)"
-
-    def enviar_sms_pedido_pronto(self, request, queryset):
-        pedidos_notificados = 0
-
-        for pedido in queryset:
-            if pedido.status == 'pronto' and hasattr(pedido.cliente, 'telefone'):
-                link_pedido = f"https://lavandaria-production.up.railway.app/meu-pedido/{pedido.id}"
-                mensagem = (
-                    f"Ola {pedido.cliente.nome}, "
-                    f"o seu artigo #{pedido.id} esta pronto, para o levantamento. "
-                    f"Para mais info. Clique aqui {link_pedido}"
-                )
-
-                resposta = enviar_sms_mozesms(pedido.cliente.telefone, mensagem)
-
-                if resposta:
-                    pedidos_notificados += 1
-
-        if pedidos_notificados:
-            messages.success(request, f"Mensagem enviada com sucesso para {pedidos_notificados} clientes.")
-        else:
-            messages.warning(request,
-                             "ERRO. Verifique se os pedidos estão 'prontos' e se os clientes têm número de telefone.")
-
-    # mantém as tuas actions operacionais
+    # ===== ACTIONS =====
     actions = [
         "marcar_como_completo",
         "marcar_como_pronto",
@@ -757,7 +604,71 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
         gerar_relatorio_pdf,
         gerar_relatorio_financeiro,
     ]
+
+    def marcar_como_completo(self, request, queryset):
+        pedidos_processados = 0
+        for pedido in queryset:
+            if pedido.status == "pendente":
+                pedido.status = "completo"
+                pedido.save(update_fields=["status"])
+                pedidos_processados += 1
+            else:
+                messages.warning(request,
+                                 f"Pedido {pedido.id} não pode ser marcado como completo. Status atual: {pedido.status}")
+        if pedidos_processados:
+            messages.success(request, f"{pedidos_processados} pedido(s) marcado(s) como completo.")
+
+    marcar_como_completo.short_description = "Marcar como Completo (apenas pendentes)"
+
+    def marcar_como_pronto(self, request, queryset):
+        pedidos_processados = 0
+        for pedido in queryset:
+            if pedido.status == "completo":
+                pedido.status = "pronto"
+                pedido.save(update_fields=["status"])
+                pedidos_processados += 1
+            else:
+                messages.warning(request,
+                                 f"Pedido {pedido.id} não pode ser marcado como pronto. Status atual: {pedido.status}")
+        if pedidos_processados:
+            messages.success(request, f"{pedidos_processados} pedido(s) marcado(s) como pronto.")
+
+    marcar_como_pronto.short_description = "Marcar como Pronto (apenas completo)"
+
+    def marcar_como_entregue(self, request, queryset):
+        pedidos_processados = 0
+        for pedido in queryset:
+            if pedido.status == "pronto":
+                pedido.status = "entregue"
+                pedido.save(update_fields=["status"])
+                pedidos_processados += 1
+            else:
+                messages.warning(request,
+                                 f"Pedido {pedido.id} não pode ser marcado como entregue. Status atual: {pedido.status}")
+        if pedidos_processados:
+            messages.success(request, f"{pedidos_processados} pedido(s) marcado(s) como entregue.")
+
+    marcar_como_entregue.short_description = "Marcar como Entregue (apenas prontos)"
+
+    def enviar_sms_pedido_pronto(self, request, queryset):
+        pedidos_notificados = 0
+        for pedido in queryset:
+            if pedido.status == 'pronto' and hasattr(pedido.cliente, 'telefone'):
+                link_pedido = f"https://lavandaria-production.up.railway.app/meu-pedido/{pedido.id}"
+                mensagem = f"Ola {pedido.cliente.nome}, o seu artigo #{pedido.id} esta pronto, para o levantamento. Para mais info. Clique aqui {link_pedido}"
+                resposta = enviar_sms_mozesms(pedido.cliente.telefone, mensagem)
+                if resposta:
+                    pedidos_notificados += 1
+        if pedidos_notificados:
+            messages.success(request, f"Mensagem enviada com sucesso para {pedidos_notificados} clientes.")
+        else:
+            messages.warning(request,
+                             "ERRO. Verifique se os pedidos estão 'prontos' e se os clientes têm número de telefone.")
+
     enviar_sms_pedido_pronto.short_description = "Enviar mensagem de pedido pronto"
+
+
+
 
 
 # Configuração do modelo ItemPedido no Admin
