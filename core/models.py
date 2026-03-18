@@ -317,18 +317,12 @@ class Pedido(models.Model):
     data_pagamento = models.DateTimeField(null=True, blank=True)
 
     # =============================
-    # 🎯 CAMPOS DE CABIDES (MODIFICADOS)
+    # CAMPOS DE CABIDES
     # =============================
-
     cabides_trazidos = models.PositiveIntegerField(
         default=0,
         help_text="Quantidade de cabides trazidos pelo cliente (cada 20 cabides = 140 Mts de desconto)"
     )
-
-    # REMOVER este campo (não é mais necessário)
-    # desconto_cabides_aplicado = models.BooleanField(default=False,
-    #     help_text="Indica se o desconto por cabides já foi aplicado"
-    # )
 
     desconto_cabides = models.DecimalField(
         max_digits=10,
@@ -358,7 +352,7 @@ class Pedido(models.Model):
         return Decimal("0.00")
 
     # =============================
-    # 🎯 MÉTODO PARA CALCULAR DESCONTO DE CABIDES (NOVO)
+    # MÉTODOS DE CÁLCULO
     # =============================
     def calcular_desconto_cabides(self):
         """Calcula o desconto baseado na quantidade de cabides trazidos"""
@@ -367,44 +361,23 @@ class Pedido(models.Model):
             return Decimal(blocos * 140)
         return Decimal("0.00")
 
-    # =============================
-    # ATUALIZAR TOTAL DOS ITENS
-    # =============================
-
     def atualizar_total(self):
         """Atualiza o total baseado nos itens e recalcula pagamentos"""
         from django.db.models import Sum
         from decimal import Decimal
 
-        # Calcula novo total
         novo_total = self.itens.aggregate(
             s=Sum("preco_total")
         )["s"] or Decimal("0.00")
 
-        # Só atualiza se mudou (evita saves desnecessários)
         if self.total != novo_total:
             self.total = novo_total
             self.save(update_fields=["total"])
-
-            # Recalcula pagamentos APENAS se o total mudou
             self.recalcular_pagamentos()
-
-    # No momento de finalizar o pedido (antes de calcular o total)
-    def calcular_total_com_desconto(self):
-        # Verifica se o cliente quer usar o desconto
-        if self.cliente.pontos >= 50000:  # Tem pontos suficientes
-            desconto = self.cliente.aplicar_desconto_fidelidade()
-            self.desconto = desconto  # Aplica no pedido
-            self.save(update_fields=["desconto"])
-
-    # =============================
-    # RECALCULAR PAGAMENTOS
-    # =============================
 
     def recalcular_pagamentos(self):
         """
         Recalcula o status de pagamento do pedido baseado nos pagamentos registrados.
-        CORREÇÃO: Evita salvar se não houver mudanças
         """
         from decimal import Decimal
         from django.db.models import Sum
@@ -419,7 +392,7 @@ class Pedido(models.Model):
         total_final = self.total_final
 
         # Prepara novos valores
-        novo_total_pago = min(soma, total_final)  # Nunca ultrapassa total_final
+        novo_total_pago = min(soma, total_final)
         novo_status = self.status_pagamento
         novo_pago = self.pago
         nova_data = self.data_pagamento
@@ -440,7 +413,7 @@ class Pedido(models.Model):
             ultimo = self.pagamentos.order_by("-pago_em").first()
             nova_data = ultimo.pago_em if ultimo else timezone.now()
 
-        # Só salva se houver mudanças (evita loop infinito)
+        # Só salva se houver mudanças
         if (self.total_pago != novo_total_pago or
                 self.status_pagamento != novo_status or
                 self.pago != novo_pago or
@@ -457,15 +430,11 @@ class Pedido(models.Model):
                 "data_pagamento"
             ])
 
-    # =============================
-    # REGISTRAR PAGAMENTO
-
     def save(self, *args, **kwargs):
         # Calcula desconto de cabides (só se veio do formulário)
         if self.cabides_trazidos and 'update_fields' not in kwargs:
             self.desconto_cabides = self.calcular_desconto_cabides()
 
-        # Salva o objeto
         super().save(*args, **kwargs)
 
     @transaction.atomic
@@ -478,10 +447,8 @@ class Pedido(models.Model):
         if valor <= 0:
             raise ValidationError("Valor do pagamento deve ser maior que zero.")
 
-        # Usa select_for_update para evitar race conditions
         pedido = Pedido.objects.select_for_update().get(pk=self.pk)
 
-        # Cria o pagamento
         PagamentoPedido.objects.create(
             pedido=pedido,
             valor=valor,
@@ -490,7 +457,6 @@ class Pedido(models.Model):
             criado_por=funcionario,
         )
 
-        # Recalcula o status (agora com o novo pagamento)
         pedido.recalcular_pagamentos()
         return pedido
 
