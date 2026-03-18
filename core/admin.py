@@ -118,8 +118,6 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
             aviso_datas_invertidas = True
     else:
         if queryset.exists():
-            # 🔥 CORREÇÃO: Usar datas do período selecionado
-            # Em vez de usar as datas dos pedidos, usar período padrão
             end_dt = timezone.now()
             start_dt = end_dt - timezone.timedelta(days=30)
         else:
@@ -141,10 +139,10 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
         .order_by('criado_em')
     )
 
-    # 🔥 CORREÇÃO: Pagamentos no período filtrado (USANDO pago_em)
+    # Pagamentos no período filtrado (USANDO pago_em)
     pagamentos_periodo = (
         PagamentoPedido.objects
-        .filter(pago_em__gte=start_dt, pago_em__lte=end_dt)  # Mudado de pedido__in para filtrar direto
+        .filter(pago_em__gte=start_dt, pago_em__lte=end_dt)
         .select_related("pedido", "criado_por")
         .order_by("pago_em", "id")
     )
@@ -155,18 +153,44 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
 
     # Totais
     total_faturado = sum([p.total_final for p in pedidos])
-    total_recebido = pagamentos_periodo.aggregate(t=Coalesce(Sum("valor"), DECIMAL_0))["t"]
+    total_recebido = pagamentos_periodo.aggregate(t=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))["t"]
     saldo_total = Decimal("0.00")
     pedidos_em_aberto = []
 
+    # CORREÇÃO: Processar pedidos com tratamento correto de datas
     for p in pedidos:
-        total_pago_historico = sum([pg.valor for pg in getattr(p, 'pagamentos_prefetched', [])]) or DECIMAL_0
-        pago_no_periodo = sum([pg.valor for pg in getattr(p, 'pagamentos_prefetched', []) if start_dt <= pg.pago_em <= end_dt]) or DECIMAL_0
+        # Total pago histórico (todos os pagamentos)
+        total_pago_historico = Decimal("0.00")
+        pagamentos_prefetched = getattr(p, 'pagamentos_prefetched', [])
+        
+        for pg in pagamentos_prefetched:
+            total_pago_historico += pg.valor
+        
+        # CORREÇÃO: Pago no período - tratar datas corretamente
+        pago_no_periodo = Decimal("0.00")
+        for pg in pagamentos_prefetched:
+            if pg.pago_em:
+                # Garantir que ambos são timezone-aware para comparação
+                pg_time = pg.pago_em
+                if timezone.is_naive(pg_time):
+                    pg_time = timezone.make_aware(pg_time)
+                
+                if start_dt <= pg_time <= end_dt:
+                    pago_no_periodo += pg.valor
 
-        saldo_real = max(p.total_final - total_pago_historico, DECIMAL_0)
-        if saldo_real > 0.01:
-            desconto_fidelidade = max(p.total - p.total_final - (p.desconto_cabides or 0) - (p.desconto or 0), DECIMAL_0)
-            desconto_total = (p.desconto or 0) + (p.desconto_cabides or 0) + desconto_fidelidade
+        # Saldo real (considerando todos os pagamentos históricos)
+        saldo_real = max(p.total_final - total_pago_historico, Decimal("0.00"))
+        
+        if saldo_real > Decimal("0.01"):  # Usar Decimal para comparação
+            # Cálculo de descontos
+            desconto_fidelidade = max(p.total - p.total_final - (p.desconto_cabides or Decimal("0.00")) - (p.desconto or Decimal("0.00")), Decimal("0.00"))
+            desconto_total = (p.desconto or Decimal("0.00")) + (p.desconto_cabides or Decimal("0.00")) + desconto_fidelidade
+
+            # Cálculo seguro de percentual
+            if p.total_final and p.total_final > 0:
+                percentual = float(total_pago_historico / p.total_final * 100)
+            else:
+                percentual = 0
 
             pedidos_em_aberto.append({
                 "pedido": p,
@@ -178,25 +202,25 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
                 "desconto_cabides": p.desconto_cabides,
                 "desconto_fidelidade": desconto_fidelidade,
                 "desconto_total": desconto_total,
-                "percentual_recebido": float(total_pago_historico / p.total_final * 100) if p.total_final else 0
+                "percentual_recebido": percentual
             })
             saldo_total += saldo_real
 
     # Resumos agregados
     resumo_por_metodo = pagamentos_periodo.values("metodo_pagamento")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
         .order_by("-total")
 
     resumo_por_dia = pagamentos_periodo.values("pago_em__date")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
         .order_by("pago_em__date")
 
     resumo_por_lavandaria = pagamentos_periodo.values("pedido__lavandaria__nome")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
         .order_by("-total")
 
     resumo_por_caixa = pagamentos_periodo.values("criado_por__user__username")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
         .order_by("-total")
 
     try:
