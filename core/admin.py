@@ -98,162 +98,129 @@ DECIMAL_0 = Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, deci
 
 def gerar_relatorio_financeiro(modeladmin, request, queryset):
     """
-    RELATÓRIO FINANCEIRO (Caixa) - RESPEITA O FILTRO DE DATA APLICADO
+    RELATÓRIO FINANCEIRO (Caixa) - Corrige datas invertidas e adiciona aviso
     """
 
-    qs_pedidos = (
-        queryset
-        .select_related("cliente", "lavandaria", "funcionario")
-        .order_by("criado_em")
-    )
-
-    # 🔥 CORREÇÃO: Usar as datas do FILTRO aplicado no admin
-    # O Django admin passa os filtros via request.GET
-    data_inicio = request.GET.get('criado_em__gte')  # ou o nome do seu filtro
-    data_fim = request.GET.get('criado_em__lte')  # ou o nome do seu filtro
+    # Filtro de datas do admin
+    data_inicio = request.GET.get('criado_em__gte')
+    data_fim = request.GET.get('criado_em__lte')
+    aviso_datas_invertidas = False
 
     if data_inicio and data_fim:
-        # Converte string para datetime
-        from datetime import datetime
-        start_dt = datetime.strptime(data_inicio, '%Y-%m-%d').date()
-        end_dt = datetime.strptime(data_fim, '%Y-%m-%d').date()
+        from datetime import datetime, timedelta
+        start_dt = timezone.make_aware(datetime.strptime(data_inicio, '%Y-%m-%d'))
+        end_dt = timezone.make_aware(datetime.strptime(data_fim, '%Y-%m-%d') + timedelta(days=1, seconds=-1))
 
-        # Adiciona hora para cobrir o dia inteiro
-        start_dt = timezone.make_aware(datetime.combine(start_dt, datetime.min.time()))
-        end_dt = timezone.make_aware(datetime.combine(end_dt, datetime.max.time()))
+        # Corrige inversão
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+            aviso_datas_invertidas = True
     else:
-        # Se não veio filtro, usa o período dos pedidos selecionados
-        if qs_pedidos.exists():
-            start_dt = qs_pedidos.first().criado_em
-            end_dt = qs_pedidos.last().criado_em
+        if queryset.exists():
+            # 🔥 CORREÇÃO: Usar datas do período selecionado
+            # Em vez de usar as datas dos pedidos, usar período padrão
+            end_dt = timezone.now()
+            start_dt = end_dt - timezone.timedelta(days=30)
         else:
             now = timezone.now()
             start_dt = now - timezone.timedelta(days=1)
             end_dt = now
 
-    # 🔥 PAGAMENTOS DO PERÍODO FILTRADO (não da data dos pedidos)
-    pagamentos = (
+    # Prefetch para pagamentos
+    pagamentos_prefetch = Prefetch(
+        'pagamentos',
+        queryset=PagamentoPedido.objects.select_related('criado_por', 'pedido'),
+        to_attr='pagamentos_prefetched'
+    )
+
+    pedidos = (
+        queryset
+        .select_related('cliente', 'lavandaria', 'funcionario')
+        .prefetch_related(pagamentos_prefetch)
+        .order_by('criado_em')
+    )
+
+    # 🔥 CORREÇÃO: Pagamentos no período filtrado (USANDO pago_em)
+    pagamentos_periodo = (
         PagamentoPedido.objects
-        .filter(pedido__in=qs_pedidos)
-        .filter(pago_em__gte=start_dt, pago_em__lte=end_dt)  # ← Agora usa as datas do filtro
-        .select_related("pedido", "pedido__cliente", "pedido__lavandaria", "criado_por", "criado_por__user")
+        .filter(pago_em__gte=start_dt, pago_em__lte=end_dt)  # Mudado de pedido__in para filtrar direto
+        .select_related("pedido", "criado_por")
         .order_by("pago_em", "id")
     )
 
-    # ===== TOTAIS =====
-    total_faturado = Decimal("0.00")
-    for p in qs_pedidos:
-        total_faturado += p.total_final
+    # Se veio um queryset de pedidos, filtrar apenas pagamentos desses pedidos
+    if queryset.exists():
+        pagamentos_periodo = pagamentos_periodo.filter(pedido__in=queryset)
 
-    # Total recebido NO PERÍODO FILTRADO
-    total_recebido = pagamentos.aggregate(
-        t=Coalesce(Sum("valor"), DECIMAL_0)
-    )["t"]
-
-    # ===== SALDOS POR PEDIDO =====
+    # Totais
+    total_faturado = sum([p.total_final for p in pedidos])
+    total_recebido = pagamentos_periodo.aggregate(t=Coalesce(Sum("valor"), DECIMAL_0))["t"]
     saldo_total = Decimal("0.00")
     pedidos_em_aberto = []
 
-    for p in qs_pedidos:
-        total_final = p.total_final
+    for p in pedidos:
+        total_pago_historico = sum([pg.valor for pg in getattr(p, 'pagamentos_prefetched', [])]) or DECIMAL_0
+        pago_no_periodo = sum([pg.valor for pg in getattr(p, 'pagamentos_prefetched', []) if start_dt <= pg.pago_em <= end_dt]) or DECIMAL_0
 
-        # 🔥 TODOS os pagamentos deste pedido (histórico completo)
-        todos_pagamentos = PagamentoPedido.objects.filter(pedido=p)
-        total_pago_historico = todos_pagamentos.aggregate(
-            t=Coalesce(Sum("valor"), DECIMAL_0)
-        )["t"]
-
-        # 🔥 Pagamentos deste pedido NO PERÍODO FILTRADO
-        pago_no_periodo = pagamentos.filter(pedido=p).aggregate(
-            t=Coalesce(Sum("valor"), DECIMAL_0)
-        )["t"]
-
-        # Saldo REAL (considerando todos pagamentos históricos)
-        saldo_real = total_final - total_pago_historico
-
-        # Só mostra no resumo se tiver saldo > 0
+        saldo_real = max(p.total_final - total_pago_historico, DECIMAL_0)
         if saldo_real > 0.01:
+            desconto_fidelidade = max(p.total - p.total_final - (p.desconto_cabides or 0) - (p.desconto or 0), DECIMAL_0)
+            desconto_total = (p.desconto or 0) + (p.desconto_cabides or 0) + desconto_fidelidade
+
             pedidos_em_aberto.append({
                 "pedido": p,
-                "total_final": total_final,
+                "total_final": p.total_final,
                 "total_pago_historico": total_pago_historico,
-                "pago_no_periodo": pago_no_periodo,  # Quanto pagou neste período
+                "pago_no_periodo": pago_no_periodo,
                 "saldo": saldo_real,
                 "desconto_geral": p.desconto,
                 "desconto_cabides": p.desconto_cabides,
+                "desconto_fidelidade": desconto_fidelidade,
+                "desconto_total": desconto_total,
+                "percentual_recebido": float(total_pago_historico / p.total_final * 100) if p.total_final else 0
             })
             saldo_total += saldo_real
 
-    # ===== RESUMOS (usando apenas pagamentos do período filtrado) =====
-    resumo_por_metodo = (
-        pagamentos.values("metodo_pagamento")
-        .annotate(
-            qtd=Count("id"),
-            total=Coalesce(Sum("valor"), DECIMAL_0),
-        )
+    # Resumos agregados
+    resumo_por_metodo = pagamentos_periodo.values("metodo_pagamento")\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
         .order_by("-total")
-    )
 
-    resumo_por_dia = (
-        pagamentos
-        .values("pago_em__date")
-        .annotate(
-            qtd=Count("id"),
-            total=Coalesce(Sum("valor"), DECIMAL_0),
-        )
+    resumo_por_dia = pagamentos_periodo.values("pago_em__date")\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
         .order_by("pago_em__date")
-    )
 
-    resumo_por_lavandaria = (
-        pagamentos
-        .values("pedido__lavandaria__nome")
-        .annotate(
-            qtd=Count("id"),
-            total=Coalesce(Sum("valor"), DECIMAL_0),
-        )
+    resumo_por_lavandaria = pagamentos_periodo.values("pedido__lavandaria__nome")\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
         .order_by("-total")
-    )
 
-    resumo_por_caixa = (
-        pagamentos
-        .values("criado_por__user__username")
-        .annotate(
-            qtd=Count("id"),
-            total=Coalesce(Sum("valor"), DECIMAL_0),
-        )
+    resumo_por_caixa = pagamentos_periodo.values("criado_por__user__username")\
+        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), DECIMAL_0))\
         .order_by("-total")
-    )
 
-    # Lavandaria do usuário
     try:
         lavandaria = request.user.funcionario.lavandaria
     except Exception:
         lavandaria = None
 
-    start_date = timezone.localtime(start_dt).strftime("%d/%m/%Y %H:%M")
-    end_date = timezone.localtime(end_dt).strftime("%d/%m/%Y %H:%M")
-
-    # Para exibição simples (só data)
     start_date_simple = timezone.localtime(start_dt).strftime("%d/%m/%Y")
     end_date_simple = timezone.localtime(end_dt).strftime("%d/%m/%Y")
 
     html_string = render_to_string("core/relatorio_financeiro.html", {
         "lavandaria": lavandaria,
-        "start_date": start_date_simple,  # Exibe só a data
-        "end_date": end_date_simple,  # Exibe só a data
-
+        "start_date": start_date_simple,
+        "end_date": end_date_simple,
         "total_faturado": total_faturado,
         "total_recebido": total_recebido,
         "saldo_total": saldo_total,
-
         "resumo_por_metodo": resumo_por_metodo,
         "resumo_por_dia": resumo_por_dia,
         "resumo_por_lavandaria": resumo_por_lavandaria,
         "resumo_por_caixa": resumo_por_caixa,
-
-        "pagamentos": pagamentos,  # Só pagamentos do período filtrado
         "pedidos_em_aberto": pedidos_em_aberto,
-        "pedidos": qs_pedidos,
+        "pedidos": pedidos,
+        "pagamentos": pagamentos_periodo,
+        "aviso_datas_invertidas": aviso_datas_invertidas,
     })
 
     buffer = BytesIO()
