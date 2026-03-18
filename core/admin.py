@@ -493,53 +493,41 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
         """
         Salva objetos relacionados na ordem correta:
         1. Primeiro os itens do pedido (para calcular o total)
-        2. Depois os pagamentos (já com o total calculado)
+        2. Depois os pagamentos
+        3. Por fim, recalcula o status de pagamento
         """
-        # Primeiro: salvar TODOS os itens do pedido
+        obj = form.instance
+
+        # PASSO 1: Processar TODOS os formsets primeiro
         for formset in formsets:
-            if formset.model == ItemPedido:
-                instances = formset.save(commit=False)
+            # Salva todos os objetos (itens e pagamentos)
+            instances = formset.save(commit=False)
 
-                # Remover objetos marcados para deletar
-                for obj in formset.deleted_objects:
-                    obj.delete()
+            # Remover objetos marcados para deletar
+            for obj_to_delete in formset.deleted_objects:
+                obj_to_delete.delete()
 
-                # Salvar novas instâncias
-                for instance in instances:
-                    instance.save()
-
-                formset.save_m2m()
-
-        # Atualizar o total do pedido baseado nos itens salvos
-        if form.instance.pk:
-            form.instance.atualizar_total()
-
-        # Segundo: salvar os pagamentos (agora com o total correto)
-        for formset in formsets:
-            if formset.model == PagamentoPedido:
-                instances = formset.save(commit=False)
-
-                # Preencher criado_por para novos pagamentos
-                for instance in instances:
-                    if not instance.criado_por:
-                        try:
-                            instance.criado_por = Funcionario.objects.get(user=request.user)
-                        except (Funcionario.DoesNotExist, AttributeError):
-                            pass
-
-                    # Força o save sem validação completa
+            # Salvar novas instâncias
+            for instance in instances:
+                # Para pagamentos, garantir criado_por
+                if isinstance(instance, PagamentoPedido) and not instance.criado_por:
                     try:
-                        # Tenta salvar ignorando validações
-                        instance.save()
-                    except Exception as e:
-                        # Se falhar, tenta com force_insert
-                        instance.save(force_insert=True)
+                        instance.criado_por = Funcionario.objects.get(user=request.user)
+                    except (Funcionario.DoesNotExist, AttributeError):
+                        pass
+                instance.save()
 
-                # Remover objetos marcados para deletar
-                for obj in formset.deleted_objects:
-                    obj.delete()
+            formset.save_m2m()
 
-                formset.save_m2m()
+        # PASSO 2: Atualizar o total do pedido baseado nos itens salvos
+        if obj.pk:
+            obj.atualizar_total()
+
+        # PASSO 3: Recalcular status de pagamento (isso vai chamar recalcular_pagamentos internamente)
+        if obj.pk:
+            # Força o recálculo completo do pedido
+            obj.refresh_from_db()
+            obj.recalcular_pagamentos()
 
 
 
@@ -597,23 +585,7 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
 
         super().save_model(request, obj, form, change)
 
-    def save_formset(self, request, form, formset, change):
-        """
-        Este método agora é chamado apenas para formsets que não foram
-        processados no save_related (como fallback)
-        """
-        if formset.model not in [ItemPedido, PagamentoPedido]:
-            instances = formset.save(commit=False)
 
-            for inst in instances:
-                if isinstance(inst, PagamentoPedido) and not inst.criado_por:
-                    try:
-                        inst.criado_por = Funcionario.objects.get(user=request.user)
-                    except Funcionario.DoesNotExist:
-                        inst.criado_por = None
-                inst.save()
-
-            formset.save_m2m()
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
