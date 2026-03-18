@@ -11,10 +11,11 @@ from .models import Pedido, Cliente, MovimentacaoPontos
 def processar_fidelidade(sender, instance, created, **kwargs):
     """
     PROCESSADOR ÚNICO de fidelidade.
-    AGUARDA até que os itens estejam salvos para processar.
+    AGORA SÓ EXECUTA NA CRIAÇÃO DO PEDIDO, NÃO EM UPDATES!
     """
-    # Só processa na criação do pedido
+    # ⚠️ MUDANÇA CRÍTICA: Só processa na criação do pedido
     if not created:
+        print(f"⏭️ Ignorando update do pedido {instance.id} - fidelidade só processa na criação")
         return
 
     # Prevenir processamento duplicado
@@ -116,16 +117,7 @@ def processar_fidelidade(sender, instance, created, **kwargs):
             cliente.total_gasto_acumulado += Decimal(valor_gasto)
             cliente.save(update_fields=["pontos", "total_gasto_acumulado"])
 
-            # ===========================================
-            # RESUMO FINAL
-            # ===========================================
-            print(f"\n=== RESUMO ===")
-            print(f"Cliente: {cliente.nome}")
-            print(f"Gasto: {valor_gasto} MZN")
-            print(f"Pontos finais: {cliente.pontos}")
-            print(f"Desconto aplicado: {desconto_aplicado} MZN")
-            print(f"Gasto acumulado: {cliente.total_gasto_acumulado}")
-            print("===============\n")
+
 
             # Marcar como processado
             instance._fidelidade_processada = True
