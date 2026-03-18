@@ -343,7 +343,15 @@ class Pedido(models.Model):
 
     @property
     def saldo(self):
-        return self.total_final - (self.total_pago or Decimal("0.00"))
+        """Calcula o saldo pendente (nunca negativo)"""
+        total_final = self.total_final
+        total_pago = self.total_pago or Decimal("0.00")
+        
+        # Saldo nunca pode ser negativo
+        if total_pago >= total_final:
+            return Decimal("0.00")
+        
+        return total_final - total_pago
 
     @property
     def troco(self):
