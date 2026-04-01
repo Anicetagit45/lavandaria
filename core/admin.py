@@ -99,165 +99,235 @@ DECIMAL_0 = Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, deci
 
 def gerar_relatorio_financeiro(modeladmin, request, queryset):
     """
-    RELATÓRIO FINANCEIRO (Caixa) - Corrige datas invertidas e adiciona aviso
+    RELATÓRIO FINANCEIRO (Caixa) - Corrigido para mostrar apenas
+    pagamentos do período filtrado, sem contaminar com histórico.
     """
 
-    # Filtro de datas do admin
+    # ── 1. DATAS ──────────────────────────────────────────────────────────────
     data_inicio = request.GET.get('criado_em__gte')
-    data_fim = request.GET.get('criado_em__lte')
+    data_fim    = request.GET.get('criado_em__lte')
     aviso_datas_invertidas = False
 
     if data_inicio and data_fim:
         from datetime import datetime, timedelta
         start_dt = timezone.make_aware(datetime.strptime(data_inicio, '%Y-%m-%d'))
-        end_dt = timezone.make_aware(datetime.strptime(data_fim, '%Y-%m-%d') + timedelta(days=1, seconds=-1))
-
-        # Corrige inversão
+        end_dt   = timezone.make_aware(
+            datetime.strptime(data_fim, '%Y-%m-%d') + timedelta(days=1, seconds=-1)
+        )
         if start_dt > end_dt:
             start_dt, end_dt = end_dt, start_dt
             aviso_datas_invertidas = True
     else:
         if queryset.exists():
-            end_dt = timezone.now()
+            end_dt   = timezone.now()
             start_dt = end_dt - timezone.timedelta(days=30)
         else:
-            now = timezone.now()
+            now      = timezone.now()
             start_dt = now - timezone.timedelta(days=1)
-            end_dt = now
+            end_dt   = now
 
-    # Prefetch para pagamentos
-    pagamentos_prefetch = Prefetch(
+    # ── 2. PREFETCH DUPLO ─────────────────────────────────────────────────────
+    # pagamentos_do_periodo → apenas os do intervalo (para o caixa do dia)
+    pagamentos_prefetch_periodo = Prefetch(
         'pagamentos',
-        queryset=PagamentoPedido.objects.select_related('criado_por', 'pedido'),
-        to_attr='pagamentos_prefetched'
+        queryset=PagamentoPedido.objects.filter(
+            pago_em__gte=start_dt,
+            pago_em__lte=end_dt,
+        ).select_related('criado_por'),
+        to_attr='pagamentos_do_periodo',
+    )
+
+    # pagamentos_historicos → todos os pagamentos (para calcular saldo real)
+    pagamentos_prefetch_historico = Prefetch(
+        'pagamentos',
+        queryset=PagamentoPedido.objects.select_related('criado_por'),
+        to_attr='pagamentos_historicos',
     )
 
     pedidos = (
         queryset
         .select_related('cliente', 'lavandaria', 'funcionario')
-        .prefetch_related(pagamentos_prefetch)
+        .prefetch_related(
+            pagamentos_prefetch_periodo,
+            pagamentos_prefetch_historico,
+        )
         .order_by('criado_em')
     )
 
-    # Pagamentos no período filtrado (USANDO pago_em)
+    # ── 3. PAGAMENTOS DO PERÍODO (para resumos agregados) ─────────────────────
     pagamentos_periodo = (
         PagamentoPedido.objects
         .filter(pago_em__gte=start_dt, pago_em__lte=end_dt)
-        .select_related("pedido", "criado_por")
-        .order_by("pago_em", "id")
+        .select_related('pedido', 'criado_por')
+        .order_by('pago_em', 'id')
     )
 
-    # Se veio um queryset de pedidos, filtrar apenas pagamentos desses pedidos
+    # Restringe aos pedidos do queryset (se existirem)
     if queryset.exists():
         pagamentos_periodo = pagamentos_periodo.filter(pedido__in=queryset)
 
-    # Totais
-    total_faturado = sum([p.total_final for p in pedidos])
-    total_recebido = pagamentos_periodo.aggregate(t=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))["t"]
-    saldo_total = Decimal("0.00")
+    # ── 4. TOTAIS GERAIS ──────────────────────────────────────────────────────
+    # total_faturado  → soma dos totais finais dos pedidos do queryset
+    total_faturado = sum(p.total_final for p in pedidos)
+
+    # total_recebido  → APENAS o que entrou no caixa no período filtrado
+    total_recebido = pagamentos_periodo.aggregate(
+        t=Coalesce(
+            Sum('valor'),
+            Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_places=2)),
+        )
+    )['t']
+
+    # ── 5. LOOP POR PEDIDO ────────────────────────────────────────────────────
+    saldo_total      = Decimal('0.00')
     pedidos_em_aberto = []
 
-    # CORREÇÃO: Processar pedidos com tratamento correto de datas
     for p in pedidos:
-        # Total pago histórico (todos os pagamentos)
-        total_pago_historico = Decimal("0.00")
-        pagamentos_prefetched = getattr(p, 'pagamentos_prefetched', [])
-        
-        for pg in pagamentos_prefetched:
-            total_pago_historico += pg.valor
-        
-        # CORREÇÃO: Pago no período - tratar datas corretamente
-        pago_no_periodo = Decimal("0.00")
-        for pg in pagamentos_prefetched:
-            if pg.pago_em:
-                # Garantir que ambos são timezone-aware para comparação
-                pg_time = pg.pago_em
-                if timezone.is_naive(pg_time):
-                    pg_time = timezone.make_aware(pg_time)
-                
-                if start_dt <= pg_time <= end_dt:
-                    pago_no_periodo += pg.valor
 
-        # Saldo real (considerando todos os pagamentos históricos)
-        saldo_real = max(p.total_final - total_pago_historico, Decimal("0.00"))
-        
-        if saldo_real > Decimal("0.01"):  # Usar Decimal para comparação
-            # Cálculo de descontos
-            desconto_fidelidade = max(p.total - p.total_final - (p.desconto_cabides or Decimal("0.00")) - (p.desconto or Decimal("0.00")), Decimal("0.00"))
-            desconto_total = (p.desconto or Decimal("0.00")) + (p.desconto_cabides or Decimal("0.00")) + desconto_fidelidade
+        # Recebido APENAS no período → para o caixa do dia
+        pago_no_periodo = sum(
+            pg.valor
+            for pg in getattr(p, 'pagamentos_do_periodo', [])
+        )
 
-            # Cálculo seguro de percentual
-            if p.total_final and p.total_final > 0:
-                percentual = float(total_pago_historico / p.total_final * 100)
-            else:
-                percentual = 0
+        # Histórico completo → para calcular o saldo real do pedido
+        total_pago_historico = sum(
+            pg.valor
+            for pg in getattr(p, 'pagamentos_historicos', [])
+        )
+
+        saldo_real = max(
+            p.total_final - total_pago_historico,
+            Decimal('0.00'),
+        )
+
+        if saldo_real > Decimal('0.01'):
+            # Descontos separados
+            desconto_fidelidade = max(
+                p.total
+                - p.total_final
+                - (p.desconto_cabides or Decimal('0.00'))
+                - (p.desconto        or Decimal('0.00')),
+                Decimal('0.00'),
+            )
+            desconto_total = (
+                (p.desconto         or Decimal('0.00'))
+                + (p.desconto_cabides or Decimal('0.00'))
+                + desconto_fidelidade
+            )
+
+            percentual = (
+                float(total_pago_historico / p.total_final * 100)
+                if p.total_final and p.total_final > 0
+                else 0
+            )
 
             pedidos_em_aberto.append({
-                "pedido": p,
-                "total_final": p.total_final,
-                "total_pago_historico": total_pago_historico,
-                "pago_no_periodo": pago_no_periodo,
-                "saldo": saldo_real,
-                "desconto_geral": p.desconto,
-                "desconto_cabides": p.desconto_cabides,
-                "desconto_fidelidade": desconto_fidelidade,
-                "desconto_total": desconto_total,
-                "percentual_recebido": percentual
+                'pedido':               p,
+                'total_final':          p.total_final,
+                # ✅ apenas o que entrou no caixa no período
+                'pago_no_periodo':      pago_no_periodo,
+                # histórico total (para mostrar quanto já foi pago no geral)
+                'total_pago_historico': total_pago_historico,
+                'saldo':                saldo_real,
+                'desconto_geral':       p.desconto,
+                'desconto_cabides':     p.desconto_cabides,
+                'desconto_fidelidade':  desconto_fidelidade,
+                'desconto_total':       desconto_total,
+                'percentual_recebido':  percentual,
             })
             saldo_total += saldo_real
 
-    # Resumos agregados
-    resumo_por_metodo = pagamentos_periodo.values("metodo_pagamento")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
-        .order_by("-total")
+    # ── 6. RESUMOS AGREGADOS (todos baseados em pago_em do período) ───────────
+    resumo_por_metodo = (
+        pagamentos_periodo
+        .values('metodo_pagamento')
+        .annotate(
+            qtd=Count('id'),
+            total=Coalesce(
+                Sum('valor'),
+                Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+        )
+        .order_by('-total')
+    )
 
-    resumo_por_dia = pagamentos_periodo.values("pago_em__date")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
-        .order_by("pago_em__date")
+    resumo_por_dia = (
+        pagamentos_periodo
+        .values('pago_em__date')
+        .annotate(
+            qtd=Count('id'),
+            total=Coalesce(
+                Sum('valor'),
+                Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+        )
+        .order_by('pago_em__date')
+    )
 
-    resumo_por_lavandaria = pagamentos_periodo.values("pedido__lavandaria__nome")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
-        .order_by("-total")
+    resumo_por_lavandaria = (
+        pagamentos_periodo
+        .values('pedido__lavandaria__nome')
+        .annotate(
+            qtd=Count('id'),
+            total=Coalesce(
+                Sum('valor'),
+                Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+        )
+        .order_by('-total')
+    )
 
-    resumo_por_caixa = pagamentos_periodo.values("criado_por__user__username")\
-        .annotate(qtd=Count("id"), total=Coalesce(Sum("valor"), Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))))\
-        .order_by("-total")
+    resumo_por_caixa = (
+        pagamentos_periodo
+        .values('criado_por__user__username')
+        .annotate(
+            qtd=Count('id'),
+            total=Coalesce(
+                Sum('valor'),
+                Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+        )
+        .order_by('-total')
+    )
 
+    # ── 7. LAVANDARIA DO UTILIZADOR ───────────────────────────────────────────
     try:
         lavandaria = request.user.funcionario.lavandaria
     except Exception:
         lavandaria = None
 
-    start_date_simple = timezone.localtime(start_dt).strftime("%d/%m/%Y")
-    end_date_simple = timezone.localtime(end_dt).strftime("%d/%m/%Y")
+    start_date_simple = timezone.localtime(start_dt).strftime('%d/%m/%Y')
+    end_date_simple   = timezone.localtime(end_dt).strftime('%d/%m/%Y')
 
-    html_string = render_to_string("core/relatorio_financeiro.html", {
-        "lavandaria": lavandaria,
-        "start_date": start_date_simple,
-        "end_date": end_date_simple,
-        "total_faturado": total_faturado,
-        "total_recebido": total_recebido,
-        "saldo_total": saldo_total,
-        "resumo_por_metodo": resumo_por_metodo,
-        "resumo_por_dia": resumo_por_dia,
-        "resumo_por_lavandaria": resumo_por_lavandaria,
-        "resumo_por_caixa": resumo_por_caixa,
-        "pedidos_em_aberto": pedidos_em_aberto,
-        "pedidos": pedidos,
-        "pagamentos": pagamentos_periodo,
-        "aviso_datas_invertidas": aviso_datas_invertidas,
+    # ── 8. RENDER + PDF ───────────────────────────────────────────────────────
+    html_string = render_to_string('core/relatorio_financeiro.html', {
+        'lavandaria':            lavandaria,
+        'start_date':            start_date_simple,
+        'end_date':              end_date_simple,
+        'total_faturado':        total_faturado,
+        'total_recebido':        total_recebido,   # ← só o do período
+        'saldo_total':           saldo_total,
+        'resumo_por_metodo':     resumo_por_metodo,
+        'resumo_por_dia':        resumo_por_dia,
+        'resumo_por_lavandaria': resumo_por_lavandaria,
+        'resumo_por_caixa':      resumo_por_caixa,
+        'pedidos_em_aberto':     pedidos_em_aberto,
+        'pedidos':               pedidos,
+        'pagamentos':            pagamentos_periodo,
+        'aviso_datas_invertidas': aviso_datas_invertidas,
     })
 
-    buffer = BytesIO()
-    filename = f"relatorio_financeiro_{start_date_simple}_a_{end_date_simple}.pdf"
+    buffer   = BytesIO()
+    filename = f'relatorio_financeiro_{start_date_simple}_a_{end_date_simple}.pdf'
     pisa_status = pisa.CreatePDF(html_string, dest=buffer)
 
     if pisa_status.err:
-        return HttpResponse("Erro ao gerar PDF", content_type="text/plain")
+        return HttpResponse('Erro ao gerar PDF', content_type='text/plain')
 
     buffer.seek(0)
-    response = HttpResponse(buffer, content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response = HttpResponse(buffer, content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
 
 @admin.register(User)
