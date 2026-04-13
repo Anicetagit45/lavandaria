@@ -609,11 +609,11 @@ def criar_grupos_com_permissoes():
         "gerente": [
             "view_funcionario",
             "add_itemservico", "change_itemservico", "delete_itemservico", "view_itemservico",
-            "add_servico", "change_servico", "delete_servico", "view_servico",
-            "add_pedido", "change_pedido", "delete_pedido", "view_pedido",
-            "add_cliente", "change_cliente", "delete_cliente", "view_cliente",
-            "add_itempedido", "change_itempedido", "delete_itempedido", "view_itempedido",
-            "add_pagamentopedido", "change_pagamentopedido", "delete_pagamentopedido", "view_pagamentopedido",
+            "add_servico", "change_servico", "view_servico",
+            "add_pedido", "change_pedido", "view_pedido",
+            "add_cliente", "change_cliente","view_cliente",
+            "add_itempedido", "view_itempedido",
+            "add_pagamentopedido", "view_pagamentopedido",
         ],
         "caixa": [
             "add_pedido", "change_pedido", "delete_pedido", "view_pedido",
