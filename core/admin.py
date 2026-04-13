@@ -330,15 +330,45 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
 
+
 @admin.register(User)
 class UserAdmin(BaseUserAdmin, ModelAdmin, ImportExportModelAdmin):
     import_form_class = ImportForm
     export_form_class = ExportForm
+
     # Forms loaded from `unfold.forms`
     form = UserChangeForm
     add_form = UserCreationForm
     change_password_form = AdminPasswordChangeForm
 
+    actions = ["tornar_gerente", "tornar_caixa"]
+
+    @admin.action(description="Tornar Gerente")
+    def tornar_gerente(self, request, queryset):
+        grupo = Group.objects.get(name="gerente")
+
+        for user in queryset:
+            user.groups.set([grupo])
+
+            # Atualiza também o Funcionario (se existir)
+            if hasattr(user, 'funcionario'):
+                user.funcionario.grupo = "gerente"
+                user.funcionario.save(update_fields=["grupo"])
+
+        messages.success(request, "Usuários atualizados para GERENTE.")
+
+    @admin.action(description="Tornar Caixa")
+    def tornar_caixa(self, request, queryset):
+        grupo = Group.objects.get(name="caixa")
+
+        for user in queryset:
+            user.groups.set([grupo])
+
+            if hasattr(user, 'funcionario'):
+                user.funcionario.grupo = "caixa"
+                user.funcionario.save(update_fields=["grupo"])
+
+        messages.success(request, "Usuários atualizados para CAIXA.")
 
 @admin.register(Group)
 class GroupAdmin(BaseGroupAdmin, ModelAdmin, ImportExportModelAdmin):
