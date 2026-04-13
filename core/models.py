@@ -616,9 +616,10 @@ def criar_grupos_com_permissoes():
             "add_pagamentopedido", "view_pagamentopedido",
         ],
         "caixa": [
-            "add_pedido", "change_pedido", "delete_pedido", "view_pedido",
-            "add_cliente", "change_cliente", "delete_cliente", "view_cliente",
-            "add_itempedido", "change_itempedido", "delete_itempedido", "view_itempedido",
+            "add_pedido", "change_pedido",  "view_pedido",
+            "add_cliente", "change_cliente", "view_cliente",
+            "add_itempedido", "change_itempedido", "view_itempedido",
+            "add_pagamentopedido", "view_pagamentopedido",
         ],
     }
 
