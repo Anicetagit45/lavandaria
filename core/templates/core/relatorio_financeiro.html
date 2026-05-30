@@ -2,7 +2,6 @@
 <html lang="pt">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Relatório Financeiro (Caixa)</title>
     <style>
         body { font-family: Arial, sans-serif; padding: 20px; color: #333; font-size: 12px; }
@@ -12,11 +11,32 @@
         .header p { font-size: 12px; color: #555; margin-top: 0; line-height: 1.35; }
         .header hr { border: 0; height: 1px; background-color: #ddd; margin: 12px 0; }
 
+        /* ── Avisos ── */
+        .aviso {
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 11px;
+        }
+        .aviso-warning {
+            background: #fff8e1;
+            border-left: 4px solid #f59e0b;
+            color: #78350f;
+        }
+        .aviso-info {
+            background: #eff6ff;
+            border-left: 4px solid #3b82f6;
+            color: #1e3a5f;
+        }
+
+        /* ── KPIs ── */
         .kpis { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-        .kpis td { padding: 8px; border: 1px solid #e0e0e0; }
+        .kpis td { padding: 8px; border: 1px solid #e0e0e0; width: 33%; }
         .kpi-title { color: #666; font-size: 11px; text-transform: uppercase; }
+        .kpi-subtitle { color: #999; font-size: 10px; margin-top: 2px; }
         .kpi-value { font-size: 14px; font-weight: bold; margin-top: 4px; }
 
+        /* ── Secções ── */
         .section-title {
             margin-top: 18px;
             font-size: 12px;
@@ -27,50 +47,64 @@
             border-left: 4px solid #007bff;
             border-radius: 4px;
         }
+        .section-title.danger { border-left-color: #ef4444; }
 
+        /* ── Tabelas ── */
         .table {
             width: 100%;
             border-collapse: collapse;
             background: white;
-            border-radius: 6px;
-            overflow: hidden;
             margin-top: 8px;
             margin-bottom: 14px;
         }
-
         th, td { padding: 6px; text-align: left; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
-        thead { background-color: #f8f9fa; color: #333; font-weight: bold; text-transform: uppercase; }
-        thead th { border-bottom: 2px solid #007bff; font-size: 11px; }
+        thead { background-color: #f8f9fa; }
+        thead th { border-bottom: 2px solid #007bff; font-size: 11px; text-transform: uppercase; }
         tfoot td { font-weight: bold; background-color: #f8f9fa; border-top: 2px solid #ddd; }
 
-        .text-right { text-align: right; }
+        .text-right  { text-align: right; }
         .text-center { text-align: center; }
-        .muted { color: #777; }
+        .muted       { color: #777; }
+
         .badge {
             display: inline-block;
             padding: 2px 6px;
             border-radius: 10px;
             font-size: 10px;
-            background: #eef2ff;
-            color: #3730a3;
         }
-        .danger { background: #fee2e2; color: #991b1b; }
-        .ok { background: #dcfce7; color: #166534; }
+        .badge-danger  { background: #fee2e2; color: #991b1b; }
+        .badge-ok      { background: #dcfce7; color: #166534; }
+        .badge-neutral { background: #eef2ff; color: #3730a3; }
+
+        /* barra de progresso simples */
+        .progress-bar-bg {
+            background: #e5e7eb;
+            border-radius: 4px;
+            height: 6px;
+            width: 80px;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .progress-bar-fill {
+            background: #3b82f6;
+            border-radius: 4px;
+            height: 6px;
+        }
     </style>
 </head>
 <body>
 {% load custom_filters %}
 
-<!-- Cabeçalho -->
+<!-- ── Cabeçalho ────────────────────────────────────────────────────── -->
 <div class="header">
     <h6>POWER WASHING, LDA</h6>
     <p>
-        Relatório Financeiro (Caixa) - Recebimentos
+        Relatório Financeiro — Movimento de Caixa
         <br>
         Período: <strong>{{ start_date }}</strong> até <strong>{{ end_date }}</strong>
         <br>
         {% if lavandaria %}
-            {{ lavandaria }} - {{ lavandaria.endereco }}
+            {{ lavandaria }} — {{ lavandaria.endereco }}
         {% else %}
             <span class="muted">Lavandaria: (não definida)</span>
         {% endif %}
@@ -78,25 +112,45 @@
     <hr>
 </div>
 
-<!-- KPIs -->
+<!-- ── Avisos ────────────────────────────────────────────────────────── -->
+{% if aviso_datas_invertidas %}
+<div class="aviso aviso-warning">
+    ⚠️ As datas foram introduzidas em ordem invertida. O relatório foi gerado
+    com o intervalo corrigido automaticamente.
+</div>
+{% endif %}
+
+{% if aviso_caixa_divergente %}
+<div class="aviso aviso-info">
+    ℹ️ O <strong>Total Recebido</strong> inclui pagamentos de pedidos criados
+    <strong>fora do período</strong> seleccionado (parcelas de pedidos antigos
+    liquidadas neste período). Isso é intencional — este relatório reflecte
+    o movimento real de caixa.
+</div>
+{% endif %}
+
+<!-- ── KPIs ──────────────────────────────────────────────────────────── -->
 <table class="kpis">
     <tr>
         <td>
-            <div class="kpi-title">Total faturado (pedidos)</div>
+            <div class="kpi-title">Total Faturado</div>
+            <div class="kpi-subtitle">pedidos criados no período</div>
             <div class="kpi-value">{{ total_faturado|currency_mzn }}</div>
         </td>
         <td>
-            <div class="kpi-title">Total recebido (pagamentos)</div>
+            <div class="kpi-title">Total Recebido (Caixa)</div>
+            <div class="kpi-subtitle">pagamentos registados no período</div>
             <div class="kpi-value">{{ total_recebido|currency_mzn }}</div>
         </td>
         <td>
-            <div class="kpi-title">Saldo em aberto</div>
+            <div class="kpi-title">Saldo em Aberto</div>
+            <div class="kpi-subtitle">pedidos não liquidados</div>
             <div class="kpi-value">{{ saldo_total|currency_mzn }}</div>
         </td>
     </tr>
 </table>
 
-<!-- Resumo por método -->
+<!-- ── Resumo por método de pagamento ───────────────────────────────── -->
 <div class="section-title">Resumo por Método de Pagamento</div>
 <table class="table">
     <thead>
@@ -114,9 +168,7 @@
             <td class="text-right">{{ row.total|currency_mzn }}</td>
         </tr>
     {% empty %}
-        <tr>
-            <td colspan="3" class="muted">Nenhum pagamento encontrado no período/seleção.</td>
-        </tr>
+        <tr><td colspan="3" class="muted">Nenhum pagamento no período.</td></tr>
     {% endfor %}
     </tbody>
     <tfoot>
@@ -127,7 +179,7 @@
     </tfoot>
 </table>
 
-<!-- Resumo por dia (caixa) -->
+<!-- ── Resumo por dia ────────────────────────────────────────────────── -->
 <div class="section-title">Resumo por Dia (Data de Pagamento)</div>
 <table class="table">
     <thead>
@@ -145,19 +197,17 @@
             <td class="text-right">{{ row.total|currency_mzn }}</td>
         </tr>
     {% empty %}
-        <tr>
-            <td colspan="3" class="muted">Sem movimentos.</td>
-        </tr>
+        <tr><td colspan="3" class="muted">Sem movimentos.</td></tr>
     {% endfor %}
     </tbody>
 </table>
 
-<!-- Resumo por caixa -->
-<div class="section-title">Resumo por Caixa (Operador)</div>
+<!-- ── Resumo por caixa ──────────────────────────────────────────────── -->
+<div class="section-title">Resumo por Operador de Caixa</div>
 <table class="table">
     <thead>
         <tr>
-            <th>Caixa</th>
+            <th>Operador</th>
             <th class="text-center">Qtd</th>
             <th class="text-right">Total Recebido</th>
         </tr>
@@ -170,14 +220,12 @@
             <td class="text-right">{{ row.total|currency_mzn }}</td>
         </tr>
     {% empty %}
-        <tr>
-            <td colspan="3" class="muted">Sem movimentos.</td>
-        </tr>
+        <tr><td colspan="3" class="muted">Sem movimentos.</td></tr>
     {% endfor %}
     </tbody>
 </table>
 
-<!-- Resumo por lavandaria (se multi) -->
+<!-- ── Resumo por lavandaria ─────────────────────────────────────────── -->
 <div class="section-title">Resumo por Lavandaria</div>
 <table class="table">
     <thead>
@@ -195,32 +243,30 @@
             <td class="text-right">{{ row.total|currency_mzn }}</td>
         </tr>
     {% empty %}
-        <tr>
-            <td colspan="3" class="muted">Sem movimentos.</td>
-        </tr>
+        <tr><td colspan="3" class="muted">Sem movimentos.</td></tr>
     {% endfor %}
     </tbody>
 </table>
 
-<!-- Detalhe de pagamentos -->
-<div class="section-title">Movimentos (Pagamentos)</div>
+<!-- ── Detalhe de movimentos (pagamentos) ───────────────────────────── -->
+<div class="section-title">Movimentos de Caixa (Pagamentos)</div>
 <table class="table">
     <thead>
         <tr>
-            <th>#</th>
+            <th>#Pag</th>
             <th>#Pedido</th>
             <th>Cliente</th>
-            <th>Data do Pedido</th>
-            <th>Data do Pagamento</th>
+            <th>Data Pedido</th>
+            <th>Data Pagamento</th>
             <th>Método</th>
-            <th>Caixa</th>
+            <th>Operador</th>
             <th class="text-right">Valor</th>
         </tr>
     </thead>
     <tbody>
     {% for p in pagamentos %}
         <tr>
-            <td>{{ p.id }}</td>
+            <td class="muted">{{ p.id }}</td>
             <td>{{ p.pedido.id }}</td>
             <td>{{ p.pedido.cliente.nome }}</td>
             <td>{{ p.pedido.criado_em|date:"d/m/Y" }}</td>
@@ -230,9 +276,7 @@
             <td class="text-right">{{ p.valor|currency_mzn }}</td>
         </tr>
     {% empty %}
-        <tr>
-            <td colspan="8" class="muted">Nenhum pagamento encontrado.</td>
-        </tr>
+        <tr><td colspan="8" class="muted">Nenhum pagamento encontrado.</td></tr>
     {% endfor %}
     </tbody>
     <tfoot>
@@ -243,7 +287,85 @@
     </tfoot>
 </table>
 
+<!-- ── Pedidos em aberto ─────────────────────────────────────────────── -->
+{% if pedidos_em_aberto %}
+<div class="section-title danger">Pedidos com Saldo em Aberto</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>#Pedido</th>
+            <th>Cliente</th>
+            <th>Data Pedido</th>
+            <th class="text-right">Total</th>
+            <th class="text-right">Recebido (período)</th>
+            <th class="text-right">Recebido (total)</th>
+            <th class="text-right">Saldo</th>
+            <th class="text-center">% Pago</th>
+            <th>Descontos</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for item in pedidos_em_aberto %}
+        <tr>
+            <td>{{ item.pedido.id }}</td>
+            <td>{{ item.pedido.cliente.nome }}</td>
+            <td>{{ item.pedido.criado_em|date:"d/m/Y" }}</td>
+            <td class="text-right">{{ item.total_final|currency_mzn }}</td>
+            <td class="text-right">{{ item.pago_no_periodo|currency_mzn }}</td>
+            <td class="text-right">{{ item.total_pago_historico|currency_mzn }}</td>
+            <td class="text-right">
+                <span class="badge badge-danger">{{ item.saldo|currency_mzn }}</span>
+            </td>
+            <td class="text-center">
+                <!-- barra de progresso -->
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" style="width: {{ item.percentual_recebido|floatformat:0 }}%;"></div>
+                </div>
+                <br>{{ item.percentual_recebido|floatformat:1 }}%
+            </td>
+            <td>
+                {% if item.desconto_geral %}
+                    <span class="badge badge-neutral">Geral: {{ item.desconto_geral|currency_mzn }}</span><br>
+                {% endif %}
+                {% if item.desconto_cabides %}
+                    <span class="badge badge-neutral">Cabides: {{ item.desconto_cabides|currency_mzn }}</span><br>
+                {% endif %}
+                {% if item.desconto_fidelidade %}
+                    <span class="badge badge-neutral">Fidelidade: {{ item.desconto_fidelidade|currency_mzn }}</span>
+                {% endif %}
+                {% if not item.desconto_total %}
+                    <span class="muted">—</span>
+                {% endif %}
+            </td>
+        </tr>
+        <!-- Sub-linha: parcelas deste pedido -->
+        {% if item.pagamentos_do_pedido %}
+        <tr>
+            <td colspan="9" style="padding: 0 0 8px 24px; background: #fafafa;">
+                <span class="muted" style="font-size:10px;">Pagamentos registados neste pedido:</span>
+                {% for pg in item.pagamentos_do_pedido %}
+                    <span class="badge badge-neutral" style="margin-left:4px;">
+                        {{ pg.pago_em|date:"d/m/Y" }} — {{ pg.metodo_pagamento|title }} — {{ pg.valor|currency_mzn }}
+                    </span>
+                {% endfor %}
+            </td>
+        </tr>
+        {% endif %}
+    {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <td colspan="6">Total em Aberto</td>
+            <td class="text-right">{{ saldo_total|currency_mzn }}</td>
+            <td colspan="2"></td>
+        </tr>
+    </tfoot>
+</table>
+{% else %}
+<div class="aviso aviso-info" style="margin-top:14px;">
+    ✅ Não existem pedidos com saldo em aberto para o período seleccionado.
+</div>
+{% endif %}
 
 </body>
 </html>
-
