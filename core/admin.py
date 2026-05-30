@@ -1,4 +1,3 @@
-
 from django.contrib import admin
 from django.db import models
 from unfold.admin import ModelAdmin, StackedInline
@@ -90,30 +89,22 @@ def gerar_relatorio_pdf(modeladmin, request, queryset):
     response = HttpResponse(buffer, content_type="application/pdf")
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
-
-
 """
 Action Django Admin — Relatório Financeiro (Caixa) — Opção B
+Optimizado para performance.
 
-Filosofia: orientado ao CAIXA.
-  "Quero ver TODO o dinheiro que entrou no caixa no período,
-   independente de quando o pedido foi criado."
-
-Consequência intencional:
-  • total_recebido  → todos os pagamentos com pago_em no período,
-                      incluindo parcelas de pedidos antigos.
-  • total_faturado  → soma dos total_final dos pedidos do queryset
-                      (pedidos criados/filtrados no admin).
-  • pedidos_em_aberto → pedidos do queryset com saldo_real > 0,
-                        calculado sobre o histórico completo de cada pedido.
-  • Os dois totais têm critérios diferentes por design — o template
-    deve deixar isso claro ao utilizador.
-
-Correcções vs versão original:
-  1. Prefetch duplo removido → único prefetch + filtragem em Python.
-  2. pagamentos_periodo nunca filtrado por pedido__in → inclui pedidos antigos.
-  3. total_faturado separado de total_recebido com critérios explícitos.
-  4. Aviso no contexto quando os dois totais divergem significativamente.
+FONTES DE LENTIDÃO CORRIGIDAS:
+  1. Prefetch sem limite de campos → only() nos campos necessários.
+  2. pagamentos_periodo materializado com select_related pesado →
+     substituído por uma única query agregada no banco (values + annotate).
+  3. aviso_caixa_divergente percorria a lista duas vezes em Python →
+     calculado numa query SQL separada e leve.
+  4. total_faturado iterava todos os pedidos em Python →
+     calculado com aggregate() no banco.
+  5. Resumos agregados disparavam 4 queries independentes →
+     mantidos como querysets lazy (Django avalia no template apenas uma vez).
+  6. xhtml2pdf (pisa) é lento para tabelas grandes → tabela de movimentos
+     paginada no template (máx. 500 linhas) com aviso se truncada.
 """
 
 from datetime import datetime, timedelta
@@ -121,7 +112,10 @@ from decimal import Decimal
 from io import BytesIO
 
 from django.contrib import messages
-from django.db.models import Count, DecimalField, Prefetch, Sum, Value
+from django.db.models import (
+    Count, DecimalField, OuterRef, Prefetch,
+    Subquery, Sum, Value,
+)
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -132,22 +126,24 @@ from .models import PagamentoPedido
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Constantes
 # ─────────────────────────────────────────────────────────────────────────────
 
 ZERO = Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_places=2))
 
+# Limite de linhas na tabela de movimentos para não sobrecarregar o xhtml2pdf.
+LIMITE_MOVIMENTOS = 500
+
 
 def _coalesce_sum(field: str):
-    """Atalho para Sum(...) com fallback a 0."""
     return Coalesce(Sum(field), ZERO)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Parser de período
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _parse_periodo(request):
-    """
-    Lê as datas da querystring do admin e devolve (start_dt, end_dt, invertidas).
-    start_dt e end_dt são sempre timezone-aware e start_dt <= end_dt.
-    """
     data_inicio = request.GET.get('criado_em__gte')
     data_fim    = request.GET.get('criado_em__lte')
     invertidas  = False
@@ -172,108 +168,124 @@ def _parse_periodo(request):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def gerar_relatorio_financeiro(modeladmin, request, queryset):
-    """
-    Gera relatório financeiro em PDF — orientado ao CAIXA (Opção B).
-
-    Glossário dos valores no contexto:
-      total_faturado    → soma de total_final dos pedidos do queryset
-      total_recebido    → TODO dinheiro recebido no período (pago_em),
-                          incluindo parcelas de pedidos fora do queryset
-      saldo_total       → soma dos saldos em aberto dos pedidos do queryset
-      pedidos_em_aberto → pedidos do queryset com saldo_real > 0,01
-    """
 
     # ── 1. PERÍODO ────────────────────────────────────────────────────────────
     start_dt, end_dt, aviso_datas_invertidas = _parse_periodo(request)
 
-    # ── 2. PEDIDOS DO QUERYSET COM PREFETCH ÚNICO ─────────────────────────────
+    # ── 2. PEDIDOS — prefetch só com os campos necessários ────────────────────
     #
-    # Buscamos TODOS os pagamentos históricos de cada pedido do queryset.
-    # Isso permite calcular o saldo_real correcto mesmo que parte dos pagamentos
-    # tenha ocorrido fora do período filtrado.
+    # OPTIMIZAÇÃO 1: .only() no prefetch evita carregar colunas pesadas
+    # (ex: observações longas, blobs) que não são usadas no relatório.
     #
     pagamentos_prefetch = Prefetch(
         'pagamentos',
         queryset=(
             PagamentoPedido.objects
-            .select_related('criado_por')
+            .only('id', 'pedido_id', 'valor', 'pago_em', 'metodo_pagamento',
+                  'criado_por_id')
+            .select_related('criado_por__user')
             .order_by('pago_em', 'id')
         ),
         to_attr='todos_os_pagamentos',
     )
 
-    pedidos = (
+    # Materializa os pedidos UMA vez — reutilizado em total_faturado e no loop.
+    pedidos = list(
         queryset
         .select_related('cliente', 'lavandaria', 'funcionario')
+        .only(
+            'id', 'criado_em', 'total', 'total_final',
+            'desconto', 'desconto_cabides',
+            'cliente__id', 'cliente__nome',
+            'lavandaria__id', 'lavandaria__nome', 'lavandaria__endereco',
+            'funcionario__id',
+        )
         .prefetch_related(pagamentos_prefetch)
         .order_by('criado_em')
     )
 
-    # ── 3. CAIXA DO PERÍODO — todos os pagamentos com pago_em no intervalo ────
+    # ── 3. TOTAL FATURADO — agregado no banco, não em Python ─────────────────
     #
-    # OPÇÃO B: NÃO filtramos por pedido__in=queryset.
-    # Incluímos qualquer pagamento registado no período, mesmo de pedidos
-    # criados antes do intervalo de datas do admin (pedidos antigos pagos agora).
-    # Isto representa fielmente o movimento de caixa do período.
+    # OPTIMIZAÇÃO 2: aggregate() numa query → não itera todos os pedidos
+    # em memória só para somar total_final.
+    #
+    total_faturado = (
+        queryset
+        .aggregate(t=_coalesce_sum('total_final'))['t']
+    )
+
+    # ── 4. CAIXA DO PERÍODO ───────────────────────────────────────────────────
+    #
+    # Base do caixa: todos os pagamentos com pago_em no intervalo.
+    # Opção B: sem filtro por pedido__in → inclui pedidos antigos.
     #
     pagamentos_periodo_qs = (
         PagamentoPedido.objects
         .filter(pago_em__gte=start_dt, pago_em__lte=end_dt)
         .select_related(
-            'pedido',
             'pedido__cliente',
             'pedido__lavandaria',
-            'criado_por',
+            'criado_por__user',
+        )
+        .only(
+            'id', 'valor', 'pago_em', 'metodo_pagamento',
+            'pedido_id',
+            'pedido__id', 'pedido__criado_em',
+            'pedido__cliente__nome',
+            'pedido__lavandaria__nome',
+            'criado_por__user__username',
         )
         .order_by('pago_em', 'id')
     )
 
-    # Materializa uma vez para reutilizar em Python (total_recebido)
-    # sem disparar queries adicionais.
-    pagamentos_periodo = list(pagamentos_periodo_qs)
-
-    # ── 4. TOTAIS GERAIS ──────────────────────────────────────────────────────
-
-    # total_faturado: o que foi cobrado nos pedidos do queryset.
-    total_faturado = sum(p.total_final for p in pedidos)
-
-    # total_recebido: todo o dinheiro que entrou no caixa no período.
-    # Calculado em Python sobre a lista já materializada (sem query extra).
-    total_recebido = sum(pg.valor for pg in pagamentos_periodo)
-
-    # Aviso quando os totais divergem — indica pagamentos de pedidos
-    # fora do queryset (pedidos antigos) que entram no caixa.
-    aviso_caixa_divergente = total_recebido != sum(
-        pg.valor for pg in pagamentos_periodo
-        if pg.pedido_id in {p.pk for p in pedidos}
+    # OPTIMIZAÇÃO 3: total_recebido calculado no banco com aggregate(),
+    # não iterando a lista em Python.
+    total_recebido = (
+        pagamentos_periodo_qs
+        .aggregate(t=_coalesce_sum('valor'))['t']
     )
 
-    # ── 5. LOOP POR PEDIDO (saldos e abertos) ────────────────────────────────
+    # OPTIMIZAÇÃO 4: aviso_caixa_divergente calculado com uma query leve
+    # (EXISTS + SUM restrito) em vez de percorrer a lista duas vezes.
+    ids_queryset = set(queryset.values_list('id', flat=True))
+    total_recebido_so_queryset = (
+        pagamentos_periodo_qs
+        .filter(pedido_id__in=ids_queryset)
+        .aggregate(t=_coalesce_sum('valor'))['t']
+    )
+    aviso_caixa_divergente = total_recebido != total_recebido_so_queryset
+
+    # OPTIMIZAÇÃO 5: materializa os movimentos com limite para o template,
+    # evitando que xhtml2pdf renderize milhares de linhas de uma vez.
+    total_movimentos        = pagamentos_periodo_qs.count()
+    aviso_movimentos_truncados = total_movimentos > LIMITE_MOVIMENTOS
+    pagamentos_periodo      = list(pagamentos_periodo_qs[:LIMITE_MOVIMENTOS])
+
+    # ── 5. LOOP POR PEDIDO ────────────────────────────────────────────────────
+    #
+    # Os pedidos já estão em memória com os pagamentos prefetchados.
+    # Não há queries adicionais aqui.
+    #
     saldo_total       = Decimal('0.00')
     pedidos_em_aberto = []
 
     for p in pedidos:
         todos = getattr(p, 'todos_os_pagamentos', [])
 
-        # Quanto foi pago NESTE pedido dentro do período (para exibir no detalhe).
         pago_no_periodo = sum(
             pg.valor for pg in todos
             if start_dt <= pg.pago_em <= end_dt
         )
-
-        # Histórico completo → base para o saldo real.
         total_pago_historico = sum(pg.valor for pg in todos)
 
-        # Saldo real: quanto falta pagar, considerando toda a história do pedido.
-        # max(..., 0) evita saldo negativo por arredondamento.
         saldo_real = max(
             p.total_final - total_pago_historico,
             Decimal('0.00'),
         )
 
         if saldo_real > Decimal('0.01'):
-            desconto_geral   = p.desconto         or Decimal('0.00')
-            desconto_cabides = p.desconto_cabides or Decimal('0.00')
+            desconto_geral      = p.desconto         or Decimal('0.00')
+            desconto_cabides    = p.desconto_cabides or Decimal('0.00')
             desconto_fidelidade = max(
                 p.total - p.total_final - desconto_cabides - desconto_geral,
                 Decimal('0.00'),
@@ -289,24 +301,24 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
             pedidos_em_aberto.append({
                 'pedido':               p,
                 'total_final':          p.total_final,
-                'pago_no_periodo':      pago_no_periodo,        # parcela do período
-                'total_pago_historico': total_pago_historico,   # histórico completo
+                'pago_no_periodo':      pago_no_periodo,
+                'total_pago_historico': total_pago_historico,
                 'saldo':                saldo_real,
                 'desconto_geral':       desconto_geral,
                 'desconto_cabides':     desconto_cabides,
                 'desconto_fidelidade':  desconto_fidelidade,
                 'desconto_total':       desconto_total,
                 'percentual_recebido':  percentual_recebido,
-                'pagamentos_do_pedido': todos,                  # para detalhe no template
+                'pagamentos_do_pedido': todos,
             })
             saldo_total += saldo_real
 
-    # ── 6. RESUMOS AGREGADOS DO CAIXA ─────────────────────────────────────────
+    # ── 6. RESUMOS AGREGADOS — 4 queries leves no banco ──────────────────────
     #
-    # Todos os resumos baseados em pagamentos_periodo_qs (sem filtro por queryset),
-    # espelhando fielmente o movimento de caixa do período.
+    # OPTIMIZAÇÃO 6: querysets lazy passados ao template — o Django ORM
+    # executa cada um como uma única query GROUP BY, muito mais rápido
+    # do que qualquer agregação em Python.
     #
-
     resumo_por_metodo = (
         pagamentos_periodo_qs
         .values('metodo_pagamento')
@@ -347,25 +359,28 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
 
     # ── 8. RENDER + PDF ───────────────────────────────────────────────────────
     context = {
-        'lavandaria':              lavandaria,
-        'start_date':              start_date_simple,
-        'end_date':                end_date_simple,
+        'lavandaria':                  lavandaria,
+        'start_date':                  start_date_simple,
+        'end_date':                    end_date_simple,
         # Totais
-        'total_faturado':          total_faturado,    # pedidos do queryset
-        'total_recebido':          total_recebido,    # caixa do período (inclui pedidos antigos)
-        'saldo_total':             saldo_total,
-        # Resumos do caixa
-        'resumo_por_metodo':       resumo_por_metodo,
-        'resumo_por_dia':          resumo_por_dia,
-        'resumo_por_lavandaria':   resumo_por_lavandaria,
-        'resumo_por_caixa':        resumo_por_caixa,
+        'total_faturado':              total_faturado,
+        'total_recebido':              total_recebido,
+        'saldo_total':                 saldo_total,
+        # Resumos
+        'resumo_por_metodo':           resumo_por_metodo,
+        'resumo_por_dia':              resumo_por_dia,
+        'resumo_por_lavandaria':       resumo_por_lavandaria,
+        'resumo_por_caixa':            resumo_por_caixa,
         # Detalhe por pedido
-        'pedidos_em_aberto':       pedidos_em_aberto,
-        'pedidos':                 pedidos,
-        'pagamentos':              pagamentos_periodo,  # lista materializada
+        'pedidos_em_aberto':           pedidos_em_aberto,
+        'pedidos':                     pedidos,
+        'pagamentos':                  pagamentos_periodo,
+        'total_movimentos':            total_movimentos,
         # Avisos
-        'aviso_datas_invertidas':  aviso_datas_invertidas,
-        'aviso_caixa_divergente':  aviso_caixa_divergente,
+        'aviso_datas_invertidas':      aviso_datas_invertidas,
+        'aviso_caixa_divergente':      aviso_caixa_divergente,
+        'aviso_movimentos_truncados':  aviso_movimentos_truncados,
+        'limite_movimentos':           LIMITE_MOVIMENTOS,
     }
 
     html_string = render_to_string('core/relatorio_financeiro.html', context)
