@@ -89,6 +89,8 @@ def gerar_relatorio_pdf(modeladmin, request, queryset):
     response = HttpResponse(buffer, content_type="application/pdf")
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
+
+
 """
 Action Django Admin — Relatório Financeiro (Caixa) — Opção B
 Optimizado para performance.
@@ -190,12 +192,19 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
     )
 
     # Materializa os pedidos UMA vez — reutilizado em total_faturado e no loop.
+    #
+    # NOTA: total_final é uma @property (total - desconto - desconto_cabides),
+    # NÃO é um campo da base de dados. Por isso:
+    #   1. .only() lista apenas campos reais (sem 'total_final')
+    #   2. total_faturado é calculado em Python sobre a lista já em memória
+    #      (sem query extra — os pedidos já foram carregados)
+    #
     pedidos = list(
         queryset
         .select_related('cliente', 'lavandaria', 'funcionario')
         .only(
-            'id', 'criado_em', 'total', 'total_final',
-            'desconto', 'desconto_cabides',
+            'id', 'criado_em',
+            'total', 'desconto', 'desconto_cabides',
             'cliente__id', 'cliente__nome',
             'lavandaria__id', 'lavandaria__nome', 'lavandaria__endereco',
             'funcionario__id',
@@ -204,15 +213,8 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
         .order_by('criado_em')
     )
 
-    # ── 3. TOTAL FATURADO — agregado no banco, não em Python ─────────────────
-    #
-    # OPTIMIZAÇÃO 2: aggregate() numa query → não itera todos os pedidos
-    # em memória só para somar total_final.
-    #
-    total_faturado = (
-        queryset
-        .aggregate(t=_coalesce_sum('total_final'))['t']
-    )
+    # ── 3. TOTAL FATURADO — soma em Python (total_final é @property) ─────────
+    total_faturado = sum(p.total_final for p in pedidos)
 
     # ── 4. CAIXA DO PERÍODO ───────────────────────────────────────────────────
     #
@@ -400,8 +402,6 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
 
 
 gerar_relatorio_financeiro.short_description = 'Gerar relatório financeiro (PDF)'
-
-
 
 
 @admin.register(User)
