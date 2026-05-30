@@ -249,6 +249,14 @@
 </table>
 
 <!-- ── Detalhe de movimentos (pagamentos) ───────────────────────────── -->
+{% if aviso_movimentos_truncados %}
+<div class="aviso aviso-warning">
+    ⚠️ O período contém <strong>{{ total_movimentos }}</strong> movimentos.
+    Por limitações de geração de PDF, apenas os primeiros
+    <strong>{{ limite_movimentos }}</strong> são apresentados nesta tabela.
+    Os totais e resumos acima reflectem <strong>todos</strong> os movimentos.
+</div>
+{% endif %}
 <div class="section-title">Movimentos de Caixa (Pagamentos)</div>
 <table class="table">
     <thead>
