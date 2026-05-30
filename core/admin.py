@@ -90,7 +90,6 @@ def gerar_relatorio_pdf(modeladmin, request, queryset):
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
 
-
 """
 Action Django Admin — Relatório Financeiro (Caixa) — Opção B
 Optimizado para performance.
@@ -146,22 +145,61 @@ def _coalesce_sum(field: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_periodo(request):
-    data_inicio = request.GET.get('criado_em__gte')
-    data_fim    = request.GET.get('criado_em__lte')
-    invertidas  = False
+    """
+    Lê o período do filtro RangeDateTimeFilter do Unfold.
+
+    O RangeDateTimeFilter gera 4 parâmetros na URL:
+      data_pagamento_from_0 → data início  (YYYY-MM-DD)
+      data_pagamento_from_1 → hora início  (HH:MM:SS)
+      data_pagamento_to_0   → data fim     (YYYY-MM-DD)
+      data_pagamento_to_1   → hora fim     (HH:MM:SS)
+
+    Também suporta os parâmetros legados criado_em__gte / criado_em__lte
+    para compatibilidade com filtros antigos.
+    """
+    invertidas = False
+
+    # ── Parâmetros do RangeDateTimeFilter (Unfold) ────────────────────────────
+    from_date = request.GET.get('data_pagamento_from_0', '').strip()
+    from_time = request.GET.get('data_pagamento_from_1', '').strip() or '00:00:00'
+    to_date   = request.GET.get('data_pagamento_to_0',   '').strip()
+    to_time   = request.GET.get('data_pagamento_to_1',   '').strip() or '23:59:59'
+
+    if from_date and to_date:
+        try:
+            start_dt = timezone.make_aware(
+                datetime.strptime(f'{from_date} {from_time}', '%Y-%m-%d %H:%M:%S')
+            )
+            end_dt = timezone.make_aware(
+                datetime.strptime(f'{to_date} {to_time}', '%Y-%m-%d %H:%M:%S')
+            )
+            if start_dt > end_dt:
+                start_dt, end_dt = end_dt, start_dt
+                invertidas = True
+            return start_dt, end_dt, invertidas
+        except ValueError:
+            pass  # formato inesperado → cai no fallback abaixo
+
+    # ── Fallback: parâmetros legados (criado_em__gte / lte) ──────────────────
+    data_inicio = request.GET.get('criado_em__gte', '').strip()
+    data_fim    = request.GET.get('criado_em__lte', '').strip()
 
     if data_inicio and data_fim:
-        start_dt = timezone.make_aware(datetime.strptime(data_inicio, '%Y-%m-%d'))
-        end_dt   = timezone.make_aware(
-            datetime.strptime(data_fim, '%Y-%m-%d') + timedelta(days=1, seconds=-1)
-        )
-        if start_dt > end_dt:
-            start_dt, end_dt = end_dt, start_dt
-            invertidas = True
-    else:
-        end_dt   = timezone.now()
-        start_dt = end_dt - timedelta(days=30)
+        try:
+            start_dt = timezone.make_aware(datetime.strptime(data_inicio, '%Y-%m-%d'))
+            end_dt   = timezone.make_aware(
+                datetime.strptime(data_fim, '%Y-%m-%d') + timedelta(days=1, seconds=-1)
+            )
+            if start_dt > end_dt:
+                start_dt, end_dt = end_dt, start_dt
+                invertidas = True
+            return start_dt, end_dt, invertidas
+        except ValueError:
+            pass
 
+    # ── Último fallback: últimos 30 dias ─────────────────────────────────────
+    end_dt   = timezone.now()
+    start_dt = end_dt - timedelta(days=30)
     return start_dt, end_dt, invertidas
 
 
@@ -402,6 +440,8 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
 
 
 gerar_relatorio_financeiro.short_description = 'Gerar relatório financeiro (PDF)'
+
+
 
 
 @admin.register(User)
