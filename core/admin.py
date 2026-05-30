@@ -90,6 +90,7 @@ def gerar_relatorio_pdf(modeladmin, request, queryset):
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
 
+
 """
 Action Django Admin — Relatório Financeiro (Caixa) — Opção B
 Optimizado para performance.
@@ -212,11 +213,19 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
     # ── 1. PERÍODO ────────────────────────────────────────────────────────────
     start_dt, end_dt, aviso_datas_invertidas = _parse_periodo(request)
 
-    # ── 2. PEDIDOS — prefetch só com os campos necessários ────────────────────
+    # ── 2. LAVANDARIA DO UTILIZADOR ───────────────────────────────────────────
     #
-    # OPTIMIZAÇÃO 1: .only() no prefetch evita carregar colunas pesadas
-    # (ex: observações longas, blobs) que não são usadas no relatório.
+    # Determina a lavandaria do utilizador logado.
+    # Todos os querysets abaixo são restritos a esta lavandaria,
+    # garantindo que um gerente/caixa só vê dados da sua unidade.
+    # Superuser vê tudo (lavandaria_do_user = None).
     #
+    try:
+        lavandaria_do_user = request.user.funcionario.lavandaria
+    except Exception:
+        lavandaria_do_user = None  # superuser ou sem funcionário → sem restrição
+
+    # ── 3. PEDIDOS — prefetch só com os campos necessários ────────────────────
     pagamentos_prefetch = Prefetch(
         'pagamentos',
         queryset=(
@@ -229,14 +238,10 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
         to_attr='todos_os_pagamentos',
     )
 
-    # Materializa os pedidos UMA vez — reutilizado em total_faturado e no loop.
+    # O queryset já vem filtrado pelo get_queryset do PedidoAdmin
+    # (que restringe por lavandaria). Aplicamos .only() para performance.
     #
-    # NOTA: total_final é uma @property (total - desconto - desconto_cabides),
-    # NÃO é um campo da base de dados. Por isso:
-    #   1. .only() lista apenas campos reais (sem 'total_final')
-    #   2. total_faturado é calculado em Python sobre a lista já em memória
-    #      (sem query extra — os pedidos já foram carregados)
-    #
+    # NOTA: total_final é @property — não pode ir em .only() nem aggregate().
     pedidos = list(
         queryset
         .select_related('cliente', 'lavandaria', 'funcionario')
@@ -251,13 +256,14 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
         .order_by('criado_em')
     )
 
-    # ── 3. TOTAL FATURADO — soma em Python (total_final é @property) ─────────
+    # ── 4. TOTAL FATURADO — soma em Python (total_final é @property) ─────────
     total_faturado = sum(p.total_final for p in pedidos)
 
-    # ── 4. CAIXA DO PERÍODO ───────────────────────────────────────────────────
+    # ── 5. CAIXA DO PERÍODO — restrito à lavandaria do utilizador ────────────
     #
-    # Base do caixa: todos os pagamentos com pago_em no intervalo.
-    # Opção B: sem filtro por pedido__in → inclui pedidos antigos.
+    # Opção B: filtra por pago_em no período (inclui pedidos antigos).
+    # CORRECÇÃO: restringe também à lavandaria do utilizador para que
+    # um caixa da Lavandaria A não veja pagamentos da Lavandaria B.
     #
     pagamentos_periodo_qs = (
         PagamentoPedido.objects
@@ -277,6 +283,13 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
         )
         .order_by('pago_em', 'id')
     )
+
+    # Restringe à lavandaria do utilizador (não superuser).
+    # Garante que caixa/gerente só vê movimentos da sua unidade.
+    if lavandaria_do_user is not None:
+        pagamentos_periodo_qs = pagamentos_periodo_qs.filter(
+            pedido__lavandaria=lavandaria_do_user
+        )
 
     # OPTIMIZAÇÃO 3: total_recebido calculado no banco com aggregate(),
     # não iterando a lista em Python.
@@ -388,10 +401,8 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
     )
 
     # ── 7. LAVANDARIA DO UTILIZADOR ───────────────────────────────────────────
-    try:
-        lavandaria = request.user.funcionario.lavandaria
-    except Exception:
-        lavandaria = None
+    # Já calculada no início (lavandaria_do_user) — reutilizamos aqui.
+    lavandaria = lavandaria_do_user
 
     fmt = '%d/%m/%Y'
     start_date_simple = timezone.localtime(start_dt).strftime(fmt)
