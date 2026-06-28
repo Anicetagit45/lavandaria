@@ -100,7 +100,13 @@ if not DEBUG or POSTGRES_LOCALLY:
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
-
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'yuransnts@gmail.com'
+EMAIL_HOST_PASSWORD = 'abwovgpxowxovqxs'
+DEFAULT_FROM_EMAIL = 'Power Washing <yuransnts@gmail.com>'
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
