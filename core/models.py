@@ -97,7 +97,8 @@ class Cliente(models.Model):
     telefone = models.CharField(max_length=20, null=True, blank=True, db_index=True)  # Adicionado db_index
     endereco = models.TextField(null=True, blank=True)
     pontos = models.PositiveIntegerField(default=0, db_index=True)  # Adicionado db_index
-    criado_em = models.DateTimeField(auto_now_add=True, db_index=True)  # Adicionado campo e índice
+    criado_em = models.DateTimeField(auto_now_add=True, db_index=True)  # Adicionado campo e índic
+    email = models.EmailField(blank=True, null=True)
 
     # Total acumulado gasto (para rastrear quando aplicar desconto)
     total_gasto_acumulado = models.DecimalField(
