@@ -1,3 +1,5 @@
+from django.contrib import messages
+from django.core.mail import EmailMessage
 from django.shortcuts import get_object_or_404, redirect, render, reverse
 from django.http import HttpResponseBadRequest
 from .models import Pedido, Cliente, Lavandaria, ItemPedido, PagamentoPedido
@@ -29,9 +31,15 @@ datas_intervalo = [(data_inicial + timedelta(days=i)) for i in range(7)]
 font_path = os.path.join(settings.BASE_DIR, "static/font/Roboto.ttf")
 
 
-def imprimir_recibo_imagem(request, pedido_id):
-    pedido = get_object_or_404(Pedido, id=pedido_id)
-
+# =====================================================================
+# 🔹 NOVO: lógica de geração do recibo extraída para função reutilizável
+# =====================================================================
+def montar_contexto_recibo(pedido):
+    """
+    Monta todo o contexto necessário para renderizar o texto do recibo.
+    Extraído de imprimir_recibo_imagem para poder ser reutilizado
+    (impressão, email, WhatsApp) sem duplicar lógica.
+    """
     # Subquery: soma pagamentos por pedido
     pagos_subq = (
         PagamentoPedido.objects
@@ -104,15 +112,9 @@ def imprimir_recibo_imagem(request, pedido_id):
         )["total"]
     )
 
-    # ================================
-    # 🔹 CORREÇÃO: Desconto fidelidade aplicado
-    # ================================
-
-    # O desconto já está no campo 'desconto' do pedido
-    # Não precisa buscar em PagamentoPedido com referência específica
+    # Desconto já está no campo 'desconto' do pedido
     desconto_aplicado = pedido.desconto or Decimal("0.00")
 
-    # Se quiser identificar se foi desconto de fidelidade (opcional)
     # Verifica se houve consumo de pontos para este pedido
     mov_uso_pontos = MovimentacaoPontos.objects.filter(
         pedido=pedido,
@@ -120,13 +122,11 @@ def imprimir_recibo_imagem(request, pedido_id):
     ).first()
 
     if mov_uso_pontos and desconto_aplicado > 0:
-        # É um desconto de fidelidade (consumiu pontos)
         desconto_fidelidade = desconto_aplicado
     else:
         desconto_fidelidade = Decimal("0.00")
 
     # Cálculo do saldo considerando o desconto
-    # total_final já é total - desconto (propriedade do modelo Pedido)
     saldo = (pedido.total_final or Decimal("0.00")) - (valor_pago or Decimal("0.00"))
     if saldo < 0:
         saldo = Decimal("0.00")
@@ -147,47 +147,42 @@ def imprimir_recibo_imagem(request, pedido_id):
         tipo="ganho"
     ).first()
 
-    # 🎯 Verificar se o pagamento foi feito com pontos
+    # Verificar se o pagamento foi feito com pontos
     pagamento_pontos = PagamentoPedido.objects.filter(
         pedido=pedido,
         metodo_pagamento="pontos"
     ).exists()
 
-    # 🎯 Pontos do cliente
+    # Pontos do cliente
     pontos_totais = pedido.cliente.pontos
     equivalente_mzn = Decimal(pontos_totais) * Decimal("0.10")
 
     pontos_ganhos = mov.pontos if mov else 0
 
-    mov = MovimentacaoPontos.objects.filter(
-        pedido=pedido,
-        tipo="ganho"
-    ).first()
-
-    # 🎯 NOVO: Calcular data de validade dos pontos (90 dias após a compra)
+    # Calcular data de validade dos pontos (90 dias após a compra)
     data_compra = pedido.criado_em
     data_validade_pontos = data_compra + timedelta(days=90)
 
-    # 🎯 NOVO: Calcular pontos que vão expirar nos próximos 30 dias (opcional)
+    # Calcular pontos que vão expirar nos próximos 30 dias
     data_limite_alerta = now() + timedelta(days=30)
     pontos_a_expirar = MovimentacaoPontos.objects.filter(
         cliente=pedido.cliente,
         tipo="ganho",
-        criado_em__lte=data_limite_alerta - timedelta(days=90)  # Pontos com 60-90 dias
+        criado_em__lte=data_limite_alerta - timedelta(days=90)
     ).aggregate(total=Coalesce(Sum("pontos"), Value(0)))["total"]
 
-    # 🎯 NOVO: Próximos pontos a expirar (mais antigos)
+    # Próximos pontos a expirar (mais antigos)
     proximo_lote_expiracao = MovimentacaoPontos.objects.filter(
         cliente=pedido.cliente,
         tipo="ganho",
-        criado_em__lte=now() - timedelta(days=60)  # Pontos com 60+ dias
+        criado_em__lte=now() - timedelta(days=60)
     ).order_by('criado_em').first()
 
     data_proxima_expiracao = None
     if proximo_lote_expiracao:
         data_proxima_expiracao = proximo_lote_expiracao.criado_em + timedelta(days=90)
 
-    recibo_texto = render_to_string("core/recibo_termico.txt", {
+    return {
         "pedido": pedido,
         "pedidos_nao_pagos": pedidos_nao_pagos,
         "total_em_divida": total_em_divida,
@@ -196,27 +191,32 @@ def imprimir_recibo_imagem(request, pedido_id):
         "ultimo_metodo_pagamento": ultimo_metodo_pagamento,
         "ultimo_metodo_pagamento_label": ultimo_metodo_pagamento_label,
 
-        # 🎁 pontos
+        # pontos
         "pontos_ganhos": pontos_ganhos,
         "pontos_totais": pontos_totais,
         "equivalente_mzn": equivalente_mzn,
 
-        # 🎁 desconto
+        # desconto
         "desconto_aplicado": desconto_aplicado,
         "desconto_fidelidade": desconto_fidelidade,
 
-        # 🎁 total com desconto (já incluso no pedido.total_final)
+        # total com desconto (já incluso no pedido.total_final)
         "total_final": pedido.total_final,
-
-
 
         "data_validade_pontos": data_validade_pontos,
         "pontos_a_expirar_breve": pontos_a_expirar,
         "data_proxima_expiracao": data_proxima_expiracao,
-    })
+    }
 
-    # Restante do código permanece IGUAL...
-    # Ajuste do tamanho da fonte e cálculo da altura
+
+def gerar_imagem_recibo_bytes(pedido):
+    """
+    Gera a imagem do recibo (PNG) em memória e devolve os bytes.
+    Reutilizado pela impressão, envio por email e envio por WhatsApp.
+    """
+    contexto = montar_contexto_recibo(pedido)
+    recibo_texto = render_to_string("core/recibo_termico.txt", contexto)
+
     try:
         font = ImageFont.load_default(size=18)
     except IOError:
@@ -258,7 +258,34 @@ def imprimir_recibo_imagem(request, pedido_id):
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return buffer.getvalue()
+
+
+def salvar_imagem_recibo_em_disco(pedido):
+    """
+    Gera a imagem do recibo e guarda em MEDIA_ROOT/recibos/.
+    Devolve o caminho absoluto no disco e a URL pública (relativa a MEDIA_URL).
+    Usado para o link do WhatsApp (precisa de URL pública acessível).
+    """
+    img_bytes = gerar_imagem_recibo_bytes(pedido)
+
+    pasta_recibos = os.path.join(settings.MEDIA_ROOT, "recibos")
+    os.makedirs(pasta_recibos, exist_ok=True)
+
+    nome_arquivo = f"recibo_pedido_{pedido.id}.png"
+    caminho_completo = os.path.join(pasta_recibos, nome_arquivo)
+
+    with open(caminho_completo, "wb") as f:
+        f.write(img_bytes)
+
+    url_publica = f"{settings.MEDIA_URL}recibos/{nome_arquivo}"
+    return caminho_completo, url_publica
+
+
+def imprimir_recibo_imagem(request, pedido_id):
+    pedido = get_object_or_404(Pedido, id=pedido_id)
+    img_bytes = gerar_imagem_recibo_bytes(pedido)
+    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
 
     return render(request, "core/imprimir_recibo.html", {"img_base64": img_base64})
 
