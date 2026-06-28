@@ -4,6 +4,9 @@ from unfold.admin import ModelAdmin, StackedInline
 from django.db.models import Prefetch
 # REMOVA ou modifique esta linha:
 # from django import forms
+from urllib.parse import quote
+from django.core.mail import EmailMessage
+from .views import salvar_imagem_recibo_em_disco, gerar_imagem_recibo_bytes
 
 # ADICIONE esta linha:
 from django import forms as django_forms
@@ -37,6 +40,13 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.urls import path, reverse
 from django.shortcuts import redirect
+from django.utils.html import format_html
+
+
+from django.core.mail import EmailMessage
+from django.conf import settings
+from urllib.parse import quote
+from django.urls import reverse
 from django.utils.html import format_html
 
 from unfold.admin import ModelAdmin
@@ -135,6 +145,9 @@ ZERO = Value(Decimal('0.00'), output_field=DecimalField(max_digits=12, decimal_p
 
 # Limite de linhas na tabela de movimentos para não sobrecarregar o xhtml2pdf.
 LIMITE_MOVIMENTOS = 500
+
+# Domínio público usado para gerar links de recibo (WhatsApp).
+DOMINIO_BASE = "https://lavandaria-production.up.railway.app"
 
 
 def _coalesce_sum(field: str):
@@ -453,6 +466,117 @@ def gerar_relatorio_financeiro(modeladmin, request, queryset):
 gerar_relatorio_financeiro.short_description = 'Gerar relatório financeiro (PDF)'
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Actions — Envio de recibo por Email e WhatsApp
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# IMPORTANTE: estas duas funções ficam FORA da classe PedidoAdmin (assim como
+# gerar_relatorio_pdf e gerar_relatorio_financeiro acima), e são referenciadas
+# pelo NOME DA FUNÇÃO (sem aspas) na lista `actions` da classe. Isto evita o
+# NameError que ocorreria se fossem definidas dentro da classe mas
+# referenciadas na lista `actions` antes de serem declaradas.
+
+def enviar_recibo_email(modeladmin, request, queryset):
+    enviados = 0
+    falhas = []
+
+    for pedido in queryset:
+        cliente = pedido.cliente
+
+        if not cliente.email:
+            falhas.append(f"Pedido {pedido.id} ({cliente.nome}): cliente sem email cadastrado.")
+            continue
+
+        try:
+            img_bytes = gerar_imagem_recibo_bytes(pedido)
+
+            email = EmailMessage(
+                subject=f"Recibo do seu pedido #{pedido.id} - LaundryBox",
+                body=(
+                    f"Olá {cliente.nome},\n\n"
+                    f"Em anexo está o recibo do seu pedido #{pedido.id}.\n\n"
+                    f"Total: {pedido.total_final:.2f} MZN\n"
+                    f"Obrigado por escolher os nossos serviços!"
+                ),
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+                to=[cliente.email],
+            )
+            email.attach(f"recibo_pedido_{pedido.id}.png", img_bytes, "image/png")
+            email.send(fail_silently=False)
+            enviados += 1
+
+        except Exception as e:
+            falhas.append(f"Pedido {pedido.id} ({cliente.nome}): erro ao enviar - {e}")
+
+    if enviados:
+        messages.success(request, f"Recibo enviado por email para {enviados} cliente(s).")
+    for falha in falhas:
+        messages.warning(request, falha)
+
+
+enviar_recibo_email.short_description = "Enviar recibo por Email"
+
+
+def enviar_recibo_whatsapp(modeladmin, request, queryset):
+    """
+    Gera o link wa.me com a mensagem + link da imagem do recibo.
+    Como esta action processa vários pedidos de uma vez mas o WhatsApp
+    só permite abrir UM chat por vez, processamos apenas o primeiro
+    pedido válido da seleção e avisamos sobre os restantes.
+    """
+    pedidos = list(queryset)
+
+    if not pedidos:
+        messages.warning(request, "Nenhum pedido selecionado.")
+        return
+
+    if len(pedidos) > 1:
+        messages.info(
+            request,
+            "O WhatsApp só permite abrir uma conversa por vez. "
+            "Foi gerado o link apenas para o primeiro pedido selecionado; "
+            "repita a ação individualmente para os outros."
+        )
+
+    pedido = pedidos[0]
+    cliente = pedido.cliente
+
+    if not cliente.telefone:
+        messages.error(request, f"Pedido {pedido.id} ({cliente.nome}): cliente sem telefone cadastrado.")
+        return
+
+    try:
+        _, url_publica = salvar_imagem_recibo_em_disco(pedido)
+    except Exception as e:
+        messages.error(request, f"Erro ao gerar imagem do recibo: {e}")
+        return
+
+    link_recibo = f"{DOMINIO_BASE}{url_publica}"
+
+    mensagem = (
+        f"Olá {cliente.nome}, aqui está o recibo do seu pedido #{pedido.id}. "
+        f"Total: {pedido.total_final:.2f} MZN. "
+        f"Veja a imagem do recibo aqui: {link_recibo}"
+    )
+
+    # Normaliza o número de telefone (remove espaços/símbolos, garante código do país)
+    numero = "".join(filter(str.isdigit, cliente.telefone))
+    if not numero.startswith("258") and len(numero) <= 9:
+        numero = f"258{numero}"
+
+    link_whatsapp = f"https://wa.me/{numero}?text={quote(mensagem)}"
+
+    messages.success(
+        request,
+        format_html(
+            'Link gerado: <a href="{}" target="_blank">Abrir WhatsApp para {}</a>',
+            link_whatsapp,
+            cliente.nome,
+        )
+    )
+
+
+enviar_recibo_whatsapp.short_description = "Enviar recibo por WhatsApp"
 
 
 @admin.register(User)
@@ -661,7 +785,9 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
         "status", "status_pagamento",
         "total", "desconto", "desconto_cabides",
         "total_final", "total_pago", "saldo_admin",
-        "botao_imprimir"
+        "botao_imprimir",
+
+
     )
     search_fields = ("cliente__nome", "cliente__telefone", "id", "itens__item_de_servico__nome",
                      "itens__descricao",)
@@ -694,6 +820,8 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
 
     autocomplete_fields = ("cliente",)
     inlines = [ItemPedidoInline, PagamentoPedidoInline]
+
+
 
     # ===== MÉTODOS PRINCIPAIS =====
     def get_queryset(self, request):
@@ -819,6 +947,8 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
         "enviar_sms_pedido_pronto",
         gerar_relatorio_pdf,
         gerar_relatorio_financeiro,
+        enviar_recibo_email,
+        enviar_recibo_whatsapp,
     ]
 
     def marcar_como_completo(self, request, queryset):
@@ -1032,18 +1162,3 @@ class PagamentoPedidoAdmin(ModelAdmin):
             messages.success(request, f"{feitos} pedido(s) quitado(s) com pagamento do saldo.")
         else:
             messages.warning(request, "Nenhum pedido com saldo pendente.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
