@@ -1,6 +1,7 @@
 from datetime import timedelta
 from django.contrib.auth.models import User, Group, Permission
 from django.contrib.contenttypes.models import ContentType
+from django.urls import path
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -31,11 +32,16 @@ class Funcionario(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='funcionario')
     lavandaria = models.ForeignKey(Lavandaria, on_delete=models.CASCADE, related_name='funcionarios')
     telefone = models.CharField(max_length=20, blank=True, null=True)
+
     grupo = models.CharField(
-        max_length=255,
-        choices=[('gerente', 'Gerente'), ('caixa', 'Caixa')],
-        help_text="Define o grupo do usuário."
-    )
+           max_length=255,
+           choices=[
+               ('admin', 'Admin'),
+               ('gerente', 'Gerente'),
+               ('vendedor', 'Vendedor'),
+           ],
+           help_text="Define o grupo do usuário."
+       )
 
     def __str__(self):
         return f"{self.user.username} - {self.grupo}"
@@ -97,7 +103,7 @@ class Cliente(models.Model):
     telefone = models.CharField(max_length=20, null=True, blank=True, db_index=True)  # Adicionado db_index
     endereco = models.TextField(null=True, blank=True)
     pontos = models.PositiveIntegerField(default=0, db_index=True)  # Adicionado db_index
-    criado_em = models.DateTimeField(auto_now_add=True, db_index=True)  # Adicionado campo e índic
+    criado_em = models.DateTimeField(auto_now_add=True, db_index=False)  # Adicionado campo e índice
     email = models.EmailField(blank=True, null=True)
 
     # Total acumulado gasto (para rastrear quando aplicar desconto)
@@ -587,6 +593,8 @@ class PagamentoPedido(models.Model):
 
         # NÃO bloquear pagamento maior que saldo
 
+
+
     def save(self, *args, **kwargs):
         """
         Save modificado para lidar com novos pedidos
@@ -618,26 +626,49 @@ class PagamentoPedido(models.Model):
         ordering = ["-pago_em"]
 
 
-# Função para criar grupos e associar permissões
 def criar_grupos_com_permissoes():
     """
-    Cria grupos predefinidos (gerente, caixa) e associa as permissões específicas.
+    Cria os grupos predefinidos (admin, gerente, vendedor) e associa
+    as permissões específicas a cada um.
     """
     grupos_permissoes = {
+        "admin": [
+            # Lavandarias — admin pode gerir todas
+            "view_lavandaria",
+            # Funcionários — admin pode gerir todos
+            "add_funcionario", "change_funcionario",  "view_funcionario",
+            # Artigos
+            "add_itemservico", "change_itemservico", "delete_itemservico", "view_itemservico",
+            # Serviços
+            "add_servico", "change_servico", "delete_servico", "view_servico",
+            # Clientes
+            "add_cliente", "change_cliente", "delete_cliente", "view_cliente",
+            # Pedidos
+            "add_pedido", "change_pedido", "delete_pedido", "view_pedido",
+            # Itens de Pedido
+            "add_itempedido", "change_itempedido", "delete_itempedido", "view_itempedido",
+            # Pagamentos
+            "add_pagamentopedido", "change_pagamentopedido", "view_pagamentopedido",
+
+        ],
         "gerente": [
             "view_funcionario",
             "add_itemservico", "change_itemservico", "delete_itemservico", "view_itemservico",
             "add_servico", "change_servico", "view_servico",
             "add_pedido", "change_pedido", "view_pedido",
-            "add_cliente", "change_cliente","view_cliente",
+            "add_cliente", "change_cliente", "view_cliente",
             "add_itempedido", "view_itempedido",
             "add_pagamentopedido", "view_pagamentopedido",
+
         ],
-        "caixa": [
-            "add_pedido", "change_pedido",  "view_pedido",
+        "vendedor": [
+            "add_pedido", "change_pedido", "view_pedido",
+            "add_itemservico", "change_itemservico", "delete_itemservico", "view_itemservico",
             "add_cliente", "change_cliente", "view_cliente",
+            "add_servico", "change_servico", "view_servico",
             "add_itempedido", "change_itempedido", "view_itempedido",
             "add_pagamentopedido", "view_pagamentopedido",
+
         ],
     }
 
