@@ -55,6 +55,14 @@ from .models import Pedido, PagamentoPedido, Funcionario
 admin.site.unregister(Group)
 admin.site.unregister(User)
 
+def usuario_ve_todas_lavandarias(request):
+    """
+    Retorna True se o utilizador deve ver dados de TODAS as lavandarias
+    (superuser ou membro do grupo 'admin'), False caso contrário.
+    """
+    if request.user.is_superuser:
+        return True
+    return request.user.groups.filter(name="admin").exists()
 
 def gerar_relatorio_pdf(modeladmin, request, queryset):
     # 🔥 Otimiza queryset para evitar N+1 queries
@@ -589,34 +597,43 @@ class UserAdmin(BaseUserAdmin, ModelAdmin, ImportExportModelAdmin):
     add_form = UserCreationForm
     change_password_form = AdminPasswordChangeForm
 
-    actions = ["tornar_gerente", "tornar_caixa"]
+    actions = ["tornar_admin", "tornar_gerente", "tornar_vendedor"]
+
+    @admin.action(description="Tornar Admin")
+    def tornar_admin(self, request, queryset):
+        grupo = Group.objects.get(name="admin")
+        for user in queryset:
+            user.groups.set([grupo])
+            user.is_staff = True
+            user.save(update_fields=["is_staff"])
+            if hasattr(user, 'funcionario'):
+                user.funcionario.grupo = "admin"
+                user.funcionario.save(update_fields=["grupo"])
+        messages.success(request, "Usuários atualizados para ADMIN.")
 
     @admin.action(description="Tornar Gerente")
     def tornar_gerente(self, request, queryset):
         grupo = Group.objects.get(name="gerente")
-
         for user in queryset:
             user.groups.set([grupo])
-
-            # Atualiza também o Funcionario (se existir)
+            user.is_staff = True
+            user.save(update_fields=["is_staff"])
             if hasattr(user, 'funcionario'):
                 user.funcionario.grupo = "gerente"
                 user.funcionario.save(update_fields=["grupo"])
-
         messages.success(request, "Usuários atualizados para GERENTE.")
 
-    @admin.action(description="Tornar Caixa")
-    def tornar_caixa(self, request, queryset):
-        grupo = Group.objects.get(name="caixa")
-
+    @admin.action(description="Tornar Vendedor")
+    def tornar_vendedor(self, request, queryset):
+        grupo = Group.objects.get(name="vendedor")
         for user in queryset:
             user.groups.set([grupo])
-
+            user.is_staff = True
+            user.save(update_fields=["is_staff"])
             if hasattr(user, 'funcionario'):
-                user.funcionario.grupo = "caixa"
+                user.funcionario.grupo = "vendedor"
                 user.funcionario.save(update_fields=["grupo"])
-
-        messages.success(request, "Usuários atualizados para CAIXA.")
+        messages.success(request, "Usuários atualizados para VENDEDOR.")
 
 @admin.register(Group)
 class GroupAdmin(BaseGroupAdmin, ModelAdmin, ImportExportModelAdmin):
@@ -657,6 +674,17 @@ class LavandariaAdmin(ModelAdmin, ImportExportModelAdmin):
     )
     readonly_fields = ('criado_em',)
 
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if usuario_ve_todas_lavandarias(request):
+            return qs
+        try:
+            funcionario = Funcionario.objects.get(user=request.user)
+            if funcionario.lavandaria:
+                return qs.filter(pk=funcionario.lavandaria.pk)
+            return qs.none()
+        except Funcionario.DoesNotExist:
+            return qs.none()
 
 # Configuração do modelo Cliente no Admin
 @admin.register(Cliente)
@@ -675,6 +703,18 @@ class FuncionarioAdmin(ModelAdmin, ImportExportModelAdmin):
     list_display = ('user', 'lavandaria', 'grupo', 'telefone')
     search_fields = ('user__username', 'telefone', 'lavandaria__nome')
     list_filter = ('grupo',)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if usuario_ve_todas_lavandarias(request):
+            return qs
+        try:
+            funcionario = Funcionario.objects.get(user=request.user)
+            if funcionario.lavandaria:
+                return qs.filter(lavandaria=funcionario.lavandaria)
+            return qs.none()
+        except Funcionario.DoesNotExist:
+            return qs.none()
 
 
 # Configuração do modelo ItemServico no Admin
@@ -826,8 +866,8 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
     # ===== MÉTODOS PRINCIPAIS =====
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
+        if usuario_ve_todas_lavandarias(request):
+              return qs
         try:
             funcionario = Funcionario.objects.get(user=request.user)
             if funcionario.lavandaria:
