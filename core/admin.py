@@ -901,7 +901,7 @@ def _saldo(pedido: Pedido) -> Decimal:
 
 
 @admin.register(PagamentoPedido)
-class PagamentoPedidoAdmin(ModelAdmin, ImportExportModelAdmi):
+class PagamentoPedidoAdmin(ModelAdmin, ImportExportModelAdmin):
     import_form_class = ImportForm
     export_form_class = ExportFor
     list_display = ("id", "pedido", "valor", "metodo_pagamento", "pago_em", "criado_por")
