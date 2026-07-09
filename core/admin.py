@@ -835,7 +835,7 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @admin.register(ItemPedido)
-class ItemPedidoAdmin(ModelAdmin, ImportExportModelAdmin)
+class ItemPedidoAdmin(ModelAdmin, ImportExportModelAdmin):
     import_form_class = ImportForm
     export_form_class = ExportForm
     list_display = ('pedido', 'item_de_servico', 'quantidade', 'preco_total')
