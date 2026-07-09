@@ -835,7 +835,9 @@ class PedidoAdmin(ModelAdmin, ImportExportModelAdmin):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @admin.register(ItemPedido)
-class ItemPedidoAdmin(ModelAdmin):
+class ItemPedidoAdmin(ModelAdmin, ImportExportModelAdmin)
+    import_form_class = ImportForm
+    export_form_class = ExportForm
     list_display = ('pedido', 'item_de_servico', 'quantidade', 'preco_total')
     search_fields = ('pedido__id', 'item_de_servico__nome')
     list_filter = ('servico',)
@@ -899,7 +901,9 @@ def _saldo(pedido: Pedido) -> Decimal:
 
 
 @admin.register(PagamentoPedido)
-class PagamentoPedidoAdmin(ModelAdmin):
+class PagamentoPedidoAdmin(ModelAdmin, ImportExportModelAdmi):
+    import_form_class = ImportForm
+    export_form_class = ExportFor
     list_display = ("id", "pedido", "valor", "metodo_pagamento", "pago_em", "criado_por")
     list_filter = (
         "metodo_pagamento",
